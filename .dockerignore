@@ -1,0 +1,14 @@
+.git/
+.gitattributes
+.gitignore
+.idea/
+*.iml
+docs/
+README.md
+compose.yaml
+mvnw
+mvnw.cmd
+.mvn/
+src/
+target/*
+!target/*.jar

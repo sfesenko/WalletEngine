@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package wallet.v1;
+
+option java_package = "com.github.walletengine.grpc.wallet.v1";
+option java_multiple_files = true;
+
+import "google/protobuf/timestamp.proto";
+
+service WalletService {
+
+  rpc Debit(TransactionRequest) returns (TransactionResponse);
+
+  rpc Credit(TransactionRequest) returns (TransactionResponse);
+
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+}
+
+message TransactionRequest {
+  string transaction_id = 1; // UUID
+  string wallet_id = 2;      // UUID
+  int64 amount = 3;          // positive = deposit, negative = withdrawal
+}
+
+message TransactionResponse {
+  string transaction_id = 1; // UUID
+  string wallet_id = 2;      // UUID
+  int64 amount = 3;          // positive = deposit, negative = withdrawal
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message GetBalanceRequest {
+  string wallet_id = 1; // UUID
+}
+
+message GetBalanceResponse {
+  string wallet_id = 1; // UUID
+  int64 amount = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
