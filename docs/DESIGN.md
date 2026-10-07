@@ -16,7 +16,8 @@
 For simplification assume that:
 - no currency
 - all amounts are integers (`bigint`)
-- amounts are signed: Credit = positive, Debit = negative movement
+- request amounts are positive; direction comes from the RPC (Debit negates)
+- stored movements are signed: Credit = positive, Debit = negative
 - one request affects exactly one wallet; no wallet-to-wallet transfers
 - `wallet_id` / `transaction_id` are UUIDs supplied by the caller; idempotency scope for `transaction_id` is global
 - wallet must exist before Debit/Credit/GetBalance (created via `CreateWallet` or seed); no implicit creation
@@ -108,13 +109,14 @@ Resolution:
 - consumers dedupe by `transaction_id`
 
 ## Create wallet API
-- `CreateWallet(CreateWalletRequest{wallet_id}) -> CreateWalletResponse{wallet_id, amount, updated_at}`
+- `CreateWallet(CreateWalletRequest{wallet_id}) -> WalletResponse{wallet_id, amount, updated_at}`
 - inserts `wallets(wallet_id, amount = 0)`; funding goes through `Credit`
-- wallet already exists -> return the current wallet
+- wallet already exists -> `ALREADY_EXISTS`
 - Debit/Credit/GetBalance on unknown wallet -> `NOT_FOUND`, no implicit creation
 
 ## Error mapping
 - `NOT_FOUND` — unknown wallet
+- `ALREADY_EXISTS` — wallet already exists
 - `FAILED_PRECONDITION` — balance would go negative
 - `INVALID_ARGUMENT` — malformed request
 - `ABORTED` — lock acquisition timeout, retryable

@@ -13,13 +13,15 @@ service WalletService {
 
   rpc Credit(TransactionRequest) returns (TransactionResponse);
 
-  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+  rpc GetBalance(GetBalanceRequest) returns (WalletResponse);
+
+  rpc CreateWallet(CreateWalletRequest) returns (WalletResponse);
 }
 
 message TransactionRequest {
   string transaction_id = 1; // UUID
   string wallet_id = 2;      // UUID
-  int64 amount = 3;          // positive = deposit, negative = withdrawal
+  int64 amount = 3;          // positive magnitude; the RPC decides the direction
 }
 
 message TransactionResponse {
@@ -33,7 +35,11 @@ message GetBalanceRequest {
   string wallet_id = 1; // UUID
 }
 
-message GetBalanceResponse {
+message CreateWalletRequest {
+  string wallet_id = 1; // UUID
+}
+
+message WalletResponse {
   string wallet_id = 1; // UUID
   int64 amount = 2;
   google.protobuf.Timestamp updated_at = 3;
