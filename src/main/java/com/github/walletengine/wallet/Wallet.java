@@ -13,7 +13,9 @@ import org.springframework.data.domain.Persistable;
 import java.time.Instant;
 import java.util.UUID;
 
-/** maps to `wallets` — current-state projection of a wallet balance. */
+/**
+ * Wallet - used as current-state projection of a wallet balance.
+ */
 @Entity
 @Table(name = "wallets")
 public class Wallet implements Persistable<UUID> {
@@ -37,6 +39,12 @@ public class Wallet implements Persistable<UUID> {
     @Transient
     private boolean isNew;
 
+    @PostLoad
+    @PostPersist
+    void markNotNew() {
+        this.isNew = false;
+    }
+
     protected Wallet() {
         // for JPA
     }
@@ -55,12 +63,6 @@ public class Wallet implements Persistable<UUID> {
     @Override
     public boolean isNew() {
         return isNew;
-    }
-
-    @PostLoad
-    @PostPersist
-    void markNotNew() {
-        this.isNew = false;
     }
 
     public UUID getWalletId() {

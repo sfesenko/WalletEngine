@@ -14,7 +14,10 @@ import org.springframework.data.domain.Persistable;
 import java.time.Instant;
 import java.util.UUID;
 
-/** maps to `wallet_ledger` — append-only transactions log, one row per movement. */
+/**
+ * Append-only transactions log, one row per movement.
+ * Invariant: `wallets.amount` must equal `sum(amount)` over all entries for that wallet.
+ */
 @Immutable
 @Entity
 @Table(name = "wallet_ledger")
