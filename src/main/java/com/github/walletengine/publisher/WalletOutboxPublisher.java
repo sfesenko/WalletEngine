@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitOperations;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -164,12 +165,28 @@ public class WalletOutboxPublisher {
         } while (rows.size() == batchSize);
     }
 
+    /**
+     * Publish batch on a single channel: AMQP guarantees publish order per channel only,
+     * and confirm channels are not reused while their confirms are pending
+     */
     @Nullable
     private PublishBatchResult publishBatch(List<WalletOutboxMessage> rows) {
-        // publish batch
         var futures = new HashMap<UUID, CompletableFuture<PublishResult>>();
-        for (var row : rows) {
-            futures.put(row.getTransactionId(), publishRabbitMQ(row));
+        try {
+            rabbitTemplate.invoke(ops -> {
+                for (var row : rows) {
+                    futures.put(row.getTransactionId(), publishRabbitMQ(ops, row));
+                }
+                return null;
+            });
+        } catch (RuntimeException e) {
+            // send failed (e.g. broker unreachable): rows without a result are marked failed;
+            // putIfAbsent keeps the results of rows already sent before the exception
+            for (var row : rows) {
+                var failedResult = PublishResult.failed(row.getTransactionId(), errorText(e));
+                var failedFuture = CompletableFuture.completedFuture(failedResult);
+                futures.putIfAbsent(row.getTransactionId(), failedFuture);
+            }
         }
 
         // wait batch to be published
@@ -186,7 +203,7 @@ public class WalletOutboxPublisher {
             LOGGER.warn("publisher confirms did not arrive within {}", batchPublishTimeout);
         }
 
-        // process result of batch publishing
+        // process results; futures that never completed are reported as missing confirms
         var published = new ArrayList<UUID>();
         var failed = new HashMap<UUID, String>();
         for (var entry : futures.entrySet()) {
@@ -204,13 +221,13 @@ public class WalletOutboxPublisher {
         return new PublishBatchResult(published, failed);
     }
 
-    private CompletableFuture<PublishResult> publishRabbitMQ(WalletOutboxMessage row) {
+    private CompletableFuture<PublishResult> publishRabbitMQ(RabbitOperations ops, WalletOutboxMessage row) {
         var transactionId = row.getTransactionId();
         var correlation = new CorrelationData(transactionId.toString());
 
         try {
             var event = toEvent(row);
-            rabbitTemplate.convertAndSend(WalletAmqpConfiguration.EXCHANGE, WalletAmqpConfiguration.ROUTING_KEY, event, correlation);
+            ops.convertAndSend(WalletAmqpConfiguration.EXCHANGE, WalletAmqpConfiguration.ROUTING_KEY, event, correlation);
         } catch (RuntimeException e) {
             return CompletableFuture.completedFuture(PublishResult.failed(transactionId, errorText(e)));
         }
@@ -219,6 +236,10 @@ public class WalletOutboxPublisher {
                 .handle((confirm, error) -> toPublishResult(transactionId, confirm, error, correlation));
     }
 
+    /**
+     * Handle batch result: delete published events and set failed rows back to PENDING
+     * so the next poll retries them
+     */
     private void acknowledgeBatch(List<WalletOutboxMessage> rows, PublishBatchResult result) {
         txTemplate.executeWithoutResult(status -> {
             if (!result.published().isEmpty()) {
@@ -260,9 +281,10 @@ public class WalletOutboxPublisher {
                     "not acknowledged: " + Objects.toString(confirm.reason(), "no reason"));
         }
         // Requires mandatory=true (spring.rabbitmq.template.mandatory) for the broker to return unroutable messages.
-        if (correlation.getReturned() != null) {
+        var returned = correlation.getReturned();
+        if (returned != null) {
             return PublishResult.failed(transactionId,
-                    "returned: " + correlation.getReturned().getReplyText());
+                    "returned: " + returned.getReplyText());
         }
         return PublishResult.ok(transactionId);
     }
