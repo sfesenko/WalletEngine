@@ -1,17 +1,13 @@
 # How to host WalletEngine on AWS
 
-- Local: `compose.yaml` — Postgres/Redis/RabbitMQ by default (app on host); `--profile app` runs the app + one-shot seed
-- AWS: same topology, managed backing services, app image from `src/main/docker/Dockerfile` (built once by `scripts/build-image.sh`, pushed to ECR; the same image compose runs)
-- Infra as code: Terraform / CloudFormation / Pulumi
-
 ## Possible options for hosting
-1. Managed backing + ECS for app
-2. Managed backing + EKS app
+1. Managed services + ECS for app
+2. Managed services + EKS app
 3. All self-hosted in K8s
 4. AWS EC2 + docker compose (+docker swarm)
 
 While EKS provides more flexibility, for this app it looks like overkill, so 1st approach (Managed backing + ECS for app) seems to be the most pragmatic one. 
-Docker Swarm offers "natural" way of deploying `compose.yaml` to AWS, but at cost of no integration with AWS - just way to "run docker compose in AWS"
+Docker Swarm offers "natural" way of deploying `docker-compose.yml` to AWS, but at cost of no integration with AWS - just way to "run docker compose in AWS"
 
 ## Managed backing + ECS Fargate
 This requires creating new (sub) project with Terraform / CloudFormation / Pulumi, and describing required infrastructure. 

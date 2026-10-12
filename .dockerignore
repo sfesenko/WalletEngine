@@ -5,7 +5,7 @@
 *.iml
 docs/
 README.md
-compose.yaml
+docker-compose.yml
 mvnw
 mvnw.cmd
 .mvn/

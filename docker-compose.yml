@@ -3,7 +3,7 @@
 #   mvn spring-boot:run                 # app on host; Spring Boot starts these services automatically
 #   docker compose up -d                # ...or start the infrastructure manually
 #
-#   ./scripts/build-image.sh            # build the app image once (jar via Maven, never inside Docker)
+#   ./scripts/build-image.sh            # build the app image once (jar via Maven)
 #   docker compose --profile app up -d  # full stack: infrastructure + app + one-shot seed container
 #
 #   docker compose stop                 # stop, keep containers and data
@@ -51,6 +51,7 @@ services:
       timeout: 10s
       retries: 10
 
+# Spring Boot application
   app:
     profiles: ["app"]
     image: walletengine:local
@@ -81,7 +82,8 @@ services:
       retries: 30
       start_period: 30s
 
-  seed:
+# Load test data into db after application starts (and flyway updates db)
+  database-seed:
     profiles: ["app"]
     image: postgres:17-alpine
     depends_on:
