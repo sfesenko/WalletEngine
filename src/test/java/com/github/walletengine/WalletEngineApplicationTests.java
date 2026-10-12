@@ -1,20 +1,22 @@
 package com.github.walletengine;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.UUID;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Smoke test for the project skeleton.
- *
- * <p>Runs against the Docker Compose infrastructure (see
- * {@code application-test.properties}), so a running Docker daemon is
- * required. The containers are left running after the test run so the
- * database can be inspected afterwards.
+ * Runs with docker-compose, containers are left running after
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -27,24 +29,26 @@ class WalletEngineApplicationTests {
     void contextLoads() {
     }
 
-    @Test
-    void flywayMigrationsAreApplied() {
-        var applied = this.jdbcTemplate.queryForObject(
-                "SELECT count(*) FROM flyway_schema_history WHERE success = true", Integer.class);
-        assertThat(applied).isGreaterThanOrEqualTo(2);
-    }
+    @ParameterizedTest
+    @CsvSource(value = {
+            "update wallet_ledger set amount = 0 where transaction_id = ?",
+            "delete from wallet_ledger where transaction_id = ?        ",
+    }, delimiter = '|')
+    void ledgerIsAppendOnly(String sql) {
+        var walletId = UUID.randomUUID();
+        var transactionId = UUID.randomUUID();
+        long amount = 100L;
 
-    @Test
-    void seedWalletsArePresent() {
-        var wallets = this.jdbcTemplate.queryForObject(
-                "SELECT count(*) FROM wallets", Integer.class);
-        assertThat(wallets).isGreaterThanOrEqualTo(3);
-    }
+        jdbcTemplate.update("insert into wallets (wallet_id) values (?)", walletId);
+        jdbcTemplate.update("insert into wallet_ledger (transaction_id, wallet_id, amount) values (?, ?, ?)",
+                transactionId, walletId, amount);
 
-    @Test
-    void ledgerImmutabilityTriggerIsInstalled() {
-        var triggers = this.jdbcTemplate.queryForObject(
-                "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_wallet_ledger_immutable'", Integer.class);
-        assertThat(triggers).isEqualTo(1);
+        assertThatThrownBy(() -> jdbcTemplate.update(sql, transactionId))
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("append-only");
+
+        assertThat(jdbcTemplate.queryForObject(
+                "select amount from wallet_ledger where transaction_id = ?", Long.class, transactionId))
+                .isEqualTo(amount);
     }
 }

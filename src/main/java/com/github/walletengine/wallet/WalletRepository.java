@@ -11,13 +11,14 @@ import java.util.UUID;
 public interface WalletRepository extends JpaRepository<Wallet, UUID> {
 
     /**
-     * Update wallet's balance. Check that update balance is positive
-     * @return either 1 if update was successful or 0 if update amount is < 0
+     * Update wallet's balance. Ensure that balance is positive
+     * @return either 1 if update was successful or 0 if update amount is < 0 or wallet is missing
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             update Wallet w
-               set w.amount = w.amount + :amount, w.updatedAt = CURRENT_TIMESTAMP
+               set w.amount = w.amount + :amount,
+                   w.updatedAt = CURRENT_TIMESTAMP
              where w.walletId = :walletId
                and w.amount + :amount >= 0
             """)

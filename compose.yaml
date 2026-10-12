@@ -1,12 +1,14 @@
-# Infrastructure for local development: Postgres + Redis + RabbitMQ.
+# Local development stack: Postgres + Redis + RabbitMQ (+ app and seed via the `app` profile).
 #
-#   mvn spring-boot:run    # Spring Boot starts these services automatically (dev services)
-#   docker compose up -d   # ...or start them manually
-#   docker compose stop    # stop, keep containers and data
-#   docker compose down    # remove containers (data stays in the volume)
-#   docker compose down -v # remove containers and data
+#   mvn spring-boot:run                 # app on host; Spring Boot starts these services automatically
+#   docker compose up -d                # ...or start the infrastructure manually
 #
-# The application itself is run locally (IDE / Maven), not in compose.
+#   ./scripts/build-image.sh            # build the app image once (jar via Maven, never inside Docker)
+#   docker compose --profile app up -d  # full stack: infrastructure + app + one-shot seed container
+#
+#   docker compose stop                 # stop, keep containers and data
+#   docker compose down                 # remove containers (data stays in the volume)
+#   docker compose down -v              # remove containers and data
 services:
 
   postgres:
@@ -20,13 +22,13 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U myuser -d mydatabase"]
+      test: ["CMD-SHELL", "pg_isready -U postgress -d wallet_db"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
-    image: redis:8-alpine
+    image: redis:8.10-alpine
     ports:
       - "6379:6379"
     healthcheck:
@@ -48,6 +50,48 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+
+  app:
+    profiles: ["app"]
+    image: walletengine:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      # compose is already up; don't let the app start its own project
+      SPRING_DOCKER_COMPOSE_ENABLED: "false"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/wallet_db
+      SPRING_DATASOURCE_USERNAME: postgress
+      SPRING_DATASOURCE_PASSWORD: postgress
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_RABBITMQ_USERNAME: myuser
+      SPRING_RABBITMQ_PASSWORD: secret
+    ports:
+      - "9090:9090"   # gRPC
+    healthcheck:
+      # Flyway migrations are done once the app reports healthy
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  seed:
+    profiles: ["app"]
+    image: postgres:17-alpine
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgress
+    volumes:
+      - ./src/test/resources/db/seed/V3__seed_test_data.sql:/seed/seed.sql:ro
+    entrypoint: ["psql", "-h", "postgres", "-U", "postgress", "-d", "wallet_db", "-v", "ON_ERROR_STOP=1", "-f", "/seed/seed.sql"]
 
 volumes:
   pgdata:

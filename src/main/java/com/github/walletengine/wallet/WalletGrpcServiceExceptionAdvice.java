@@ -1,7 +1,9 @@
 package com.github.walletengine.wallet;
 
-import com.github.walletengine.lock.LockAcquisitionTimeoutException;
+import com.github.walletengine.lock.LockFailedException;
 import io.grpc.Status;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.grpc.server.advice.GrpcAdvice;
 import org.springframework.grpc.server.advice.GrpcExceptionHandler;
 
@@ -14,38 +16,46 @@ import org.springframework.grpc.server.advice.GrpcExceptionHandler;
 @GrpcAdvice
 public class WalletGrpcServiceExceptionAdvice {
 
+    private static Status mapException(Status status, Exception e) {
+        return mapError(status, e.getMessage());
+    }
+
+    private static Status mapError(Status notFound, String errorMessage) {
+        return notFound.withDescription(errorMessage);
+    }
+
     @GrpcExceptionHandler(WalletNotFoundException.class)
     public Status onWalletNotFound(WalletNotFoundException e) {
-        var description = e.getMessage();
-
-        return Status.NOT_FOUND.withDescription(description);
+        return mapException(Status.NOT_FOUND, e);
     }
 
     @GrpcExceptionHandler(InsufficientFundsException.class)
     public Status onInsufficientFunds(InsufficientFundsException e) {
-        var description = e.getMessage();
-
-        return Status.FAILED_PRECONDITION.withDescription(description);
+        return mapException(Status.FAILED_PRECONDITION, e);
     }
 
     @GrpcExceptionHandler(WalletAlreadyExistsException.class)
     public Status onWalletAlreadyExists(WalletAlreadyExistsException e) {
-        var description = e.getMessage();
-
-        return Status.ALREADY_EXISTS.withDescription(description);
+        return mapException(Status.ALREADY_EXISTS, e);
     }
 
-    @GrpcExceptionHandler(LockAcquisitionTimeoutException.class)
-    public Status onLockTimeout(LockAcquisitionTimeoutException e) {
-        var description = e.getMessage();
+    @GrpcExceptionHandler(LockFailedException.class)
+    public Status onLockFailed(LockFailedException e) {
+        return mapException(Status.ABORTED, e);
+    }
 
-        return Status.ABORTED.withDescription(description);
+    @GrpcExceptionHandler(DataIntegrityViolationException.class)
+    public Status onDataIntegrityViolation(DataIntegrityViolationException e) {
+        return mapError(Status.ABORTED, "unexpected database constraint violation");
+    }
+
+    @GrpcExceptionHandler(DataAccessResourceFailureException.class)
+    public Status onResourceFailure(DataAccessResourceFailureException e) {
+        return mapError(Status.UNAVAILABLE, "backing service unavailable");
     }
 
     @GrpcExceptionHandler(IllegalArgumentException.class)
     public Status onInvalidArgument(IllegalArgumentException e) {
-        var description = e.getMessage();
-
-        return Status.INVALID_ARGUMENT.withDescription(description);
+        return mapException(Status.INVALID_ARGUMENT, e);
     }
 }

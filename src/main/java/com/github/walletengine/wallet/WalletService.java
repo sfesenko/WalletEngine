@@ -1,37 +1,53 @@
 package com.github.walletengine.wallet;
 
-import com.github.walletengine.lock.WalletLockManager;
+import com.github.walletengine.lock.LockManager;
+import com.github.walletengine.publisher.WalletOutboxMessage;
+import com.github.walletengine.publisher.WalletOutboxMessageRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
 import java.util.UUID;
 
 @Service
 public class WalletService {
 
     private final WalletRepository walletRepository;
-    private final WalletLedgerRepository ledgerRepository;
-    private final WalletLockManager lockManager;
+    private final WalletTransactionRepository transactionRepository;
+    private final WalletOutboxMessageRepository outboxRepository;
+    private final WalletFailedTransactionRepository failedTransactionRepository;
+    private final LockManager lockManager;
+    private final Duration lockTtl;
+    private final boolean strictIdempotency;
     private final TransactionTemplate txTemplate;
 
     public WalletService(WalletRepository walletRepository,
-                         WalletLedgerRepository ledgerRepository,
-                         WalletLockManager lockManager,
+                         WalletTransactionRepository transactionRepository,
+                         WalletOutboxMessageRepository outboxRepository,
+                         WalletFailedTransactionRepository failedTransactionRepository,
+                         LockManager lockManager,
+                         @Value("${wallet.lock.ttl:5s}") Duration lockTtl,
+                         @Value("${wallet.idempotency.strict:false}") boolean strictIdempotency,
                          PlatformTransactionManager txManager) {
         this.walletRepository = walletRepository;
-        this.ledgerRepository = ledgerRepository;
+        this.transactionRepository = transactionRepository;
+        this.outboxRepository = outboxRepository;
+        this.failedTransactionRepository = failedTransactionRepository;
         this.lockManager = lockManager;
+        this.lockTtl = lockTtl;
+        this.strictIdempotency = strictIdempotency;
         this.txTemplate = new TransactionTemplate(txManager);
     }
 
-    public WalletLedgerEntry debit(UUID transactionId, UUID walletId, long amount) {
+    public WalletTransaction debit(UUID transactionId, UUID walletId, long amount) {
         return applyMovement(transactionId, walletId, -amount);
     }
 
-    public WalletLedgerEntry credit(UUID transactionId, UUID walletId, long amount) {
+    public WalletTransaction credit(UUID transactionId, UUID walletId, long amount) {
         return applyMovement(transactionId, walletId, amount);
     }
 
@@ -51,44 +67,131 @@ public class WalletService {
     public Wallet createWallet(UUID walletId) {
         var wallet = new Wallet(walletId);
         try {
-            return walletRepository.save(wallet);
+            // use saveAndFlush to force constraint validation inside transaction
+            return walletRepository.saveAndFlush(wallet);
         } catch (DataIntegrityViolationException e) {
             throw new WalletAlreadyExistsException(walletId);
         }
     }
 
-    private WalletLedgerEntry applyMovement(UUID transactionId, UUID walletId, long amount) {
-        lockManager.acquire(walletId);
-        try {
-            return txTemplate.execute(txStatus -> executeMovement(transactionId, walletId, amount));
-        } finally {
-            lockManager.release(walletId);
+    /**
+     * Lock wallet an apply transaction
+     */
+    private WalletTransaction applyMovement(UUID transactionId, UUID walletId, long amount) {
+        try (var lock = lockManager.acquire("wallet:" + walletId, lockTtl)) {
+            try {
+                return txTemplate.execute(txStatus -> {
+                    var entry = executeMovement(transactionId, walletId, amount);
+
+                    // if lock expired - abort transaction, because lock guarantees weren't enforced
+                    lock.check();
+                    return entry;
+                });
+            } catch (InsufficientFundsException e) {
+                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.ERROR_INSUFFICIENT_FUNDS);
+                throw e;
+            } catch (WalletNotFoundException e) {
+                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.ERROR_WALLET_NOT_FOUND);
+                throw e;
+            }
+        } catch (DataIntegrityViolationException e) {
+            // same transaction id has been already stored
+            // check if it belong the same wallet
+            return resolveCommittedDuplicate(transactionId, walletId, amount, e);
         }
     }
 
     /**
-     * Update wallet balance and save ledger entry
+     * Execute wallet movement, all actions in the same transaction:
+     * - update wallet balance
+     * - store WalletTransaction
+     * - store wallet outbox event
      */
-    private WalletLedgerEntry executeMovement(UUID transactionId, UUID walletId, long amount) {
-        var existing = ledgerRepository.findById(transactionId);
+    private WalletTransaction executeMovement(UUID transactionId, UUID walletId, long amount) {
+        var existing = transactionRepository.findById(transactionId);
         if (existing.isPresent()) {
-            var stored = existing.get();
-            if (!stored.getWalletId().equals(walletId) || stored.getAmount() != amount) {
-                throw new IllegalArgumentException("transaction_id already used: " + transactionId);
+            return validateWalletLedger(existing.get(), walletId, amount);
+        }
+        if (strictIdempotency) {
+            var failed = failedTransactionRepository.findById(transactionId);
+            if (failed.isPresent()) {
+                throw replayFailedTransaction(failed.get(), walletId, amount);
             }
-            return stored;
         }
 
         var updated = walletRepository.updateWallet(walletId, amount);
-        if (updated == 0) {
-            var walletExists = walletRepository.existsById(walletId);
-            if (walletExists) {
-                throw new InsufficientFundsException(walletId);
-            } else {
-                throw new WalletNotFoundException(walletId);
-            }
+        if (updated > 0) {
+            outboxRepository.save(new WalletOutboxMessage(transactionId, walletId, amount));
+            return transactionRepository.save(new WalletTransaction(transactionId, walletId, amount));
         }
+        // wallet update may fail because either wallet is missing or amount became negative
+        // check actual reason
+        if (!walletRepository.existsById(walletId)) {
+            throw new WalletNotFoundException(walletId);
+        }
+        //  double-check transactionId - since we lock over walletId, that transactionId still may "slip" into DB
+        return transactionRepository.findById(transactionId)
+                .map(stored -> validateWalletLedger(stored, walletId, amount))
+                .orElseThrow(() -> new InsufficientFundsException(walletId));
+    }
 
-        return ledgerRepository.save(new WalletLedgerEntry(transactionId, walletId, amount));
+    /**
+     * Ensure specified transaction was already applied to the same wallet
+     * throw IllegalTransactionException otherwise
+     */
+    private WalletTransaction resolveCommittedDuplicate(
+            UUID transactionId,
+            UUID walletId,
+            long amount,
+            DataIntegrityViolationException original) {
+        var stored = txTemplate.execute(txStatus -> transactionRepository.findById(transactionId).orElse(null));
+        if (stored == null) {
+            throw original;
+        }
+        return validateWalletLedger(stored, walletId, amount);
+    }
+
+    /**
+     * validate if WalletTransaction has specified amount / wallet
+     */
+    private static WalletTransaction validateWalletLedger(WalletTransaction stored, UUID walletId, long amount) {
+        if (!stored.getWalletId().equals(walletId) || stored.getAmount() != amount) {
+            UUID transactionId = stored.getTransactionId();
+            var message = "transaction_id %s already used for wallet %s (amount %d), conflicting with wallet %s (amount %d)"
+                    .formatted(transactionId, stored.getWalletId(), stored.getAmount(), walletId, amount);
+            throw new IllegalTransactionException(message);
+        }
+        return stored;
+    }
+
+    /**
+     * Strict idempotency: a duplicate of a failed movement replays the recorded error
+     */
+    private static RuntimeException replayFailedTransaction(WalletFailedTransaction stored, UUID walletId, long amount) {
+        if (!stored.getWalletId().equals(walletId) || stored.getAmount() != amount) {
+            var message = "transaction_id %s failed for wallet %s (amount %d), conflicting with wallet %s (amount %d)"
+                    .formatted(stored.getTransactionId(), stored.getWalletId(), stored.getAmount(), walletId, amount);
+            throw new IllegalTransactionException(message);
+        }
+        return switch (stored.getErrorCode()) {
+            case WalletFailedTransaction.ERROR_INSUFFICIENT_FUNDS -> new InsufficientFundsException(walletId);
+            case WalletFailedTransaction.ERROR_WALLET_NOT_FOUND -> new WalletNotFoundException(walletId);
+            default -> throw new IllegalStateException("unknown failure error code: " + stored.getErrorCode());
+        };
+    }
+
+    /**
+     * Strict idempotency:: Records a state-dependent failure.
+     */
+    private void recordFailedTransaction(UUID transactionId, UUID walletId, long amount, String errorCode) {
+        if (!strictIdempotency) {
+            return;
+        }
+        try {
+            txTemplate.execute(txStatus ->
+                    failedTransactionRepository.save(new WalletFailedTransaction(transactionId, walletId, amount, errorCode)));
+        } catch (DataIntegrityViolationException ignored) {
+            // a racing duplicate recorded this failure first — the stored record replays instead
+        }
     }
 }

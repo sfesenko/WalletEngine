@@ -21,7 +21,7 @@ import java.util.UUID;
 @Immutable
 @Entity
 @Table(name = "wallet_ledger")
-public class WalletLedgerEntry implements Persistable<UUID> {
+public class WalletTransaction implements Persistable<UUID> {
 
     @Id
     @Column(name = "transaction_id", nullable = false)
@@ -46,11 +46,11 @@ public class WalletLedgerEntry implements Persistable<UUID> {
     @Transient
     private boolean isNew;
 
-    protected WalletLedgerEntry() {
+    protected WalletTransaction() {
         // for JPA
     }
 
-    public WalletLedgerEntry(UUID transactionId, UUID walletId, long amount) {
+    public WalletTransaction(UUID transactionId, UUID walletId, long amount) {
         this.transactionId = transactionId;
         this.walletId = walletId;
         this.amount = amount;

@@ -89,7 +89,7 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
         return amount;
     }
 
-    private static TransactionResponse toTransactionResponse(WalletLedgerEntry entry) {
+    private static TransactionResponse toTransactionResponse(WalletTransaction entry) {
         return TransactionResponse.newBuilder()
                 .setTransactionId(entry.getTransactionId().toString())
                 .setWalletId(entry.getWalletId().toString())
