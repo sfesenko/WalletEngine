@@ -3,6 +3,8 @@ package com.github.walletengine.wallet;
 import com.github.walletengine.lock.LockManager;
 import com.github.walletengine.publisher.WalletOutboxMessage;
 import com.github.walletengine.publisher.WalletOutboxMessageRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,8 @@ import java.util.UUID;
 
 @Service
 public class WalletService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(WalletService.class);
 
     private final WalletRepository walletRepository;
     private final WalletTransactionRepository transactionRepository;
@@ -80,18 +84,24 @@ public class WalletService {
     private WalletTransaction applyMovement(UUID transactionId, UUID walletId, long amount) {
         try (var lock = lockManager.acquire("wallet:" + walletId, lockTtl)) {
             try {
-                return txTemplate.execute(txStatus -> {
-                    var entry = executeMovement(transactionId, walletId, amount);
+                var entry = txTemplate.execute(txStatus -> {
+                    var applied = executeMovement(transactionId, walletId, amount);
 
                     // if lock expired - abort transaction, because lock guarantees weren't enforced
                     lock.check();
-                    return entry;
+                    return applied;
                 });
+                LOGGER.info("movement applied: tx={} wallet={} amount={}", transactionId, walletId, amount);
+                return entry;
             } catch (InsufficientFundsException e) {
-                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.ERROR_INSUFFICIENT_FUNDS);
+                LOGGER.warn("transaction rejected, insufficient funds: tx={} wallet={} amount={}",
+                        transactionId, walletId, amount);
+                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.Error.INSUFFICIENT_FUNDS);
                 throw e;
             } catch (WalletNotFoundException e) {
-                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.ERROR_WALLET_NOT_FOUND);
+                LOGGER.warn("transaction rejected, wallet not found: tx={} wallet={} amount={}",
+                        transactionId, walletId, amount);
+                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.Error.WALLET_NOT_FOUND);
                 throw e;
             }
         } catch (DataIntegrityViolationException e) {
@@ -159,6 +169,7 @@ public class WalletService {
             UUID transactionId = stored.getTransactionId();
             var message = "transaction_id %s already used for wallet %s (amount %d), conflicting with wallet %s (amount %d)"
                     .formatted(transactionId, stored.getWalletId(), stored.getAmount(), walletId, amount);
+            LOGGER.warn("transaction id conflict: {}", message);
             throw new IllegalTransactionException(message);
         }
         return stored;
@@ -171,25 +182,25 @@ public class WalletService {
         if (!stored.getWalletId().equals(walletId) || stored.getAmount() != amount) {
             var message = "transaction_id %s failed for wallet %s (amount %d), conflicting with wallet %s (amount %d)"
                     .formatted(stored.getTransactionId(), stored.getWalletId(), stored.getAmount(), walletId, amount);
+            LOGGER.warn("transaction id conflict: {}", message);
             throw new IllegalTransactionException(message);
         }
-        return switch (stored.getErrorCode()) {
-            case WalletFailedTransaction.ERROR_INSUFFICIENT_FUNDS -> new InsufficientFundsException(walletId);
-            case WalletFailedTransaction.ERROR_WALLET_NOT_FOUND -> new WalletNotFoundException(walletId);
-            default -> throw new IllegalStateException("unknown failure error code: " + stored.getErrorCode());
+        return switch (stored.getError()) {
+            case INSUFFICIENT_FUNDS -> new InsufficientFundsException(walletId);
+            case WALLET_NOT_FOUND -> new WalletNotFoundException(walletId);
         };
     }
 
     /**
      * Strict idempotency:: Records a state-dependent failure.
      */
-    private void recordFailedTransaction(UUID transactionId, UUID walletId, long amount, String errorCode) {
+    private void recordFailedTransaction(UUID transactionId, UUID walletId, long amount, WalletFailedTransaction.Error error) {
         if (!strictIdempotency) {
             return;
         }
         try {
             txTemplate.execute(txStatus ->
-                    failedTransactionRepository.save(new WalletFailedTransaction(transactionId, walletId, amount, errorCode)));
+                    failedTransactionRepository.save(new WalletFailedTransaction(transactionId, walletId, amount, error)));
         } catch (DataIntegrityViolationException ignored) {
             // a racing duplicate recorded this failure first — the stored record replays instead
         }

@@ -16,8 +16,9 @@ import java.util.UUID;
 @Table(name = "rejected_movements")
 public class WalletFailedTransaction implements Persistable<UUID> {
 
-    public static final String ERROR_INSUFFICIENT_FUNDS = "insufficient_funds";
-    public static final String ERROR_WALLET_NOT_FOUND = "wallet_not_found";
+    public enum Error {
+        INSUFFICIENT_FUNDS, WALLET_NOT_FOUND
+    }
 
     @Id
     @Column(name = "transaction_id", nullable = false)
@@ -29,8 +30,9 @@ public class WalletFailedTransaction implements Persistable<UUID> {
     @Column(name = "amount", nullable = false)
     private long amount;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "error_code", nullable = false)
-    private String errorCode;
+    private Error error;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false)
@@ -46,11 +48,11 @@ public class WalletFailedTransaction implements Persistable<UUID> {
         // for JPA
     }
 
-    public WalletFailedTransaction(UUID transactionId, UUID walletId, long amount, String errorCode) {
+    public WalletFailedTransaction(UUID transactionId, UUID walletId, long amount, Error error) {
         this.transactionId = transactionId;
         this.walletId = walletId;
         this.amount = amount;
-        this.errorCode = errorCode;
+        this.error = error;
         this.isNew = true;
     }
 
@@ -81,8 +83,8 @@ public class WalletFailedTransaction implements Persistable<UUID> {
         return amount;
     }
 
-    public String getErrorCode() {
-        return errorCode;
+    public Error getError() {
+        return error;
     }
 
     public Instant getCreatedAt() {

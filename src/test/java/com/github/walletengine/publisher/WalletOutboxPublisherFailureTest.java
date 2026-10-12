@@ -62,7 +62,7 @@ class WalletOutboxPublisherFailureTest {
 
     @BeforeEach
     void clearPendingOutbox() {
-        jdbcTemplate.update("delete from wallet_outbox where status = 'pending'");
+        jdbcTemplate.update("delete from wallet_outbox where status = 'PENDING'");
     }
 
     @AfterEach
@@ -83,7 +83,7 @@ class WalletOutboxPublisherFailureTest {
 
         assertThat(row.getAttempts()).isEqualTo(1);
         assertThat(row.getLastError()).isNotBlank();
-        assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.STATUS_PENDING);
+        assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.Status.PENDING);
 
         // whole batch failed: the next publish is paused, attempts stay put
         publisher.publish();
@@ -108,7 +108,7 @@ class WalletOutboxPublisherFailureTest {
         var row = outboxRepository.findById(transactionId).orElseThrow();
 
         assertThat(row.getAttempts()).isEqualTo(10);
-        assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.STATUS_PENDING);
+        assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.Status.PENDING);
     }
 
     @Test
@@ -118,7 +118,7 @@ class WalletOutboxPublisherFailureTest {
         // simulate a crash after the claim, long before the processing timeout
         jdbcTemplate.update("""
                 update wallet_outbox
-                   set status = 'processing', created_at = now() - interval '2 hours'
+                   set status = 'PROCESSING', created_at = now() - interval '2 hours'
                  where transaction_id = ?
                 """, transactionId);
 
@@ -126,7 +126,7 @@ class WalletOutboxPublisherFailureTest {
         publisher.reclaimProcessing();
 
         assertThat(outboxRepository.findById(transactionId).orElseThrow().getStatus())
-                .isEqualTo(WalletOutboxMessage.STATUS_PENDING);
+                .isEqualTo(WalletOutboxMessage.Status.PENDING);
 
         publisher.publish();
 
@@ -148,7 +148,7 @@ class WalletOutboxPublisherFailureTest {
 
             assertThat(row.getAttempts()).isEqualTo(1);
             assertThat(row.getLastError()).startsWith("returned:");
-            assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.STATUS_PENDING);
+            assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.Status.PENDING);
         } finally {
             amqpAdmin.initialize();
         }

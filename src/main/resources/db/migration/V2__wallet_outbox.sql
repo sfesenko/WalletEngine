@@ -3,7 +3,7 @@ create table wallet_outbox (
     wallet_id      uuid        not null,
     amount         bigint      not null,
     seq            bigserial   not null,
-    status         varchar     not null default 'pending',
+    status         varchar     not null default 'PENDING',
     attempts       integer     not null default 0,
     last_error     text,
     created_at     timestamptz not null default now()

@@ -2,6 +2,8 @@ package com.github.walletengine.publisher;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.PostLoad;
 import jakarta.persistence.PostPersist;
@@ -17,8 +19,9 @@ import java.util.UUID;
 @Table(name = "wallet_outbox")
 public class WalletOutboxMessage implements Persistable<UUID> {
 
-    public static final String STATUS_PENDING = "pending";
-    public static final String STATUS_PROCESSING = "processing";
+    public enum Status {
+        PENDING, PROCESSING
+    }
 
     @Id
     @Column(name = "transaction_id", nullable = false)
@@ -33,8 +36,9 @@ public class WalletOutboxMessage implements Persistable<UUID> {
     @Column(name = "seq", nullable = false, insertable = false, updatable = false)
     private long seq;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
-    private String status;
+    private Status status;
 
     @Column(name = "attempts", nullable = false)
     private int attempts;
@@ -57,7 +61,7 @@ public class WalletOutboxMessage implements Persistable<UUID> {
         this.transactionId = transactionId;
         this.walletId = walletId;
         this.amount = amount;
-        this.status = STATUS_PENDING;
+        this.status = Status.PENDING;
         this.isNew = true;
     }
 
@@ -93,7 +97,7 @@ public class WalletOutboxMessage implements Persistable<UUID> {
         return seq;
     }
 
-    public String getStatus() {
+    public Status getStatus() {
         return status;
     }
 

@@ -2,6 +2,8 @@ package com.github.walletengine.wallet;
 
 import com.github.walletengine.lock.LockFailedException;
 import io.grpc.Status;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.grpc.server.advice.GrpcAdvice;
@@ -16,7 +18,10 @@ import org.springframework.grpc.server.advice.GrpcExceptionHandler;
 @GrpcAdvice
 public class WalletGrpcServiceExceptionAdvice {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(WalletGrpcServiceExceptionAdvice.class);
+
     private static Status mapException(Status status, Exception e) {
+        LOGGER.warn("request failed, mapped {} to {}: {}", e.getClass().getSimpleName(), status.getCode(), e.getMessage());
         return mapError(status, e.getMessage());
     }
 
@@ -46,11 +51,13 @@ public class WalletGrpcServiceExceptionAdvice {
 
     @GrpcExceptionHandler(DataIntegrityViolationException.class)
     public Status onDataIntegrityViolation(DataIntegrityViolationException e) {
+        LOGGER.warn("unexpected database constraint violation", e);
         return mapError(Status.ABORTED, "unexpected database constraint violation");
     }
 
     @GrpcExceptionHandler(DataAccessResourceFailureException.class)
     public Status onResourceFailure(DataAccessResourceFailureException e) {
+        LOGGER.warn("backing service unavailable", e);
         return mapError(Status.UNAVAILABLE, "backing service unavailable");
     }
 

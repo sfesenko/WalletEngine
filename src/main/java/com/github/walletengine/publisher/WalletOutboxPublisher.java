@@ -127,10 +127,11 @@ public class WalletOutboxPublisher {
         do {
             rows = txTemplate.execute(status -> {
                 var claimed = outboxRepository.claim(
-                        WalletOutboxMessage.STATUS_PENDING, MAX_ATTEMPTS - 1, batchSize);
+                        WalletOutboxMessage.Status.PENDING.name(), MAX_ATTEMPTS - 1, batchSize);
                 if (!claimed.isEmpty()) {
                     outboxRepository.markProcessing(
-                            claimed.stream().map(WalletOutboxMessage::getId).toList());
+                            claimed.stream().map(WalletOutboxMessage::getId).toList(),
+                            WalletOutboxMessage.Status.PROCESSING);
                 }
                 return claimed;
             });
@@ -224,7 +225,8 @@ public class WalletOutboxPublisher {
                 outboxRepository.deleteByTransactionIds(result.published());
             }
             // per-row update: last_error carries the failure reason, which differs per row
-            result.failed().forEach(outboxRepository::markFailed);
+            result.failed().forEach((id, error) ->
+                    outboxRepository.markFailed(id, error, WalletOutboxMessage.Status.PENDING));
         });
         for (var row : rows) {
             var error = result.failed().get(row.getTransactionId());

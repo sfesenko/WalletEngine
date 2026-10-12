@@ -84,7 +84,7 @@ class WalletOutboxPublisherTest {
         var transactionId = TestFixture.creditFreshWallet(walletService, amount);
 
         for (var i = 0; i < failures; i++) {
-            outboxRepository.markFailed(transactionId, "simulated failure " + i);
+            outboxRepository.markFailed(transactionId, "simulated failure " + i, WalletOutboxMessage.Status.PENDING);
         }
 
         publisher.publish();

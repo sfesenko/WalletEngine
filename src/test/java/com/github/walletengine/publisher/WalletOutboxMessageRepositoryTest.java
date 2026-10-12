@@ -71,7 +71,7 @@ class WalletOutboxMessageRepositoryTest {
         var failingId = TestFixture.creditFreshWallet(walletService, 200L);
 
         for (var i = 0; i < failures; i++) {
-            var updated = outboxRepository.markFailed(failingId, "failure " + (i + 1));
+            var updated = outboxRepository.markFailed(failingId, "failure " + (i + 1), WalletOutboxMessage.Status.PENDING);
 
             assertThat(updated).isEqualTo(1);
         }
@@ -80,7 +80,7 @@ class WalletOutboxMessageRepositoryTest {
 
         assertThat(row.getAttempts()).isEqualTo(failures);
         assertThat(row.getLastError()).isNotBlank();
-        assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.STATUS_PENDING);
+        assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.Status.PENDING);
 
         if (claimable) {
             assertThat(claimableAmong(List.of(freshId, failingId)))
@@ -95,13 +95,13 @@ class WalletOutboxMessageRepositoryTest {
         var first = TestFixture.creditFreshWallet(walletService, 100L);
         var second = TestFixture.creditFreshWallet(walletService, 200L);
 
-        var updated = outboxRepository.markProcessing(List.of(first, second));
+        var updated = outboxRepository.markProcessing(List.of(first, second), WalletOutboxMessage.Status.PROCESSING);
 
         assertThat(updated).isEqualTo(2);
         assertThat(outboxRepository.findById(first).orElseThrow().getStatus())
-                .isEqualTo(WalletOutboxMessage.STATUS_PROCESSING);
+                .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
         assertThat(outboxRepository.findById(second).orElseThrow().getStatus())
-                .isEqualTo(WalletOutboxMessage.STATUS_PROCESSING);
+                .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
         assertThat(claimableAmong(List.of(first, second))).isEmpty();
     }
 
@@ -112,27 +112,27 @@ class WalletOutboxMessageRepositoryTest {
 
         jdbcTemplate.update("""
                 update wallet_outbox
-                   set status = 'processing', created_at = now() - interval '2 hours'
+                   set status = 'PROCESSING', created_at = now() - interval '2 hours'
                  where transaction_id = ?
                 """, staleId);
         jdbcTemplate.update("""
                 update wallet_outbox
-                   set status = 'processing'
+                   set status = 'PROCESSING'
                  where transaction_id = ?
                 """, freshId);
 
         outboxRepository.resetStaleProcessing(PROCESSING_TIMEOUT_MINUTES);
 
         assertThat(outboxRepository.findById(staleId).orElseThrow().getStatus())
-                .isEqualTo(WalletOutboxMessage.STATUS_PENDING);
+                .isEqualTo(WalletOutboxMessage.Status.PENDING);
         assertThat(outboxRepository.findById(freshId).orElseThrow().getStatus())
-                .isEqualTo(WalletOutboxMessage.STATUS_PROCESSING);
+                .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
 
         outboxRepository.deleteByTransactionIds(List.of(staleId, freshId));
     }
 
     private List<WalletOutboxMessage> claimPending() {
-        return outboxRepository.claim(WalletOutboxMessage.STATUS_PENDING, MAX_ATTEMPTS - 1, ALL_ROWS);
+        return outboxRepository.claim(WalletOutboxMessage.Status.PENDING.name(), MAX_ATTEMPTS - 1, ALL_ROWS);
     }
 
     private List<UUID> claimableAmong(List<UUID> mine) {

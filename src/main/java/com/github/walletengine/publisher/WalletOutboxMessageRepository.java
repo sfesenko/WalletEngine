@@ -30,14 +30,14 @@ public interface WalletOutboxMessageRepository extends JpaRepository<WalletOutbo
             @Param("size") int size);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("update WalletOutboxMessage e set e.status = 'processing' where e.transactionId in :ids")
-    int markProcessing(@Param("ids") Collection<UUID> ids);
+    @Query("update WalletOutboxMessage e set e.status = :status where e.transactionId in :ids")
+    int markProcessing(@Param("ids") Collection<UUID> ids, @Param("status") WalletOutboxMessage.Status status);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             update wallet_outbox
-               set status = 'pending'
-             where status = 'processing'
+               set status = 'PENDING'
+             where status = 'PROCESSING'
                and (now() - created_at) > (:timeoutMinutes * interval '1 minute')
             """, nativeQuery = true)
     int resetStaleProcessing(@Param("timeoutMinutes") long timeoutMinutes);
@@ -51,8 +51,9 @@ public interface WalletOutboxMessageRepository extends JpaRepository<WalletOutbo
             update WalletOutboxMessage e
                set e.attempts = e.attempts + 1,
                e.lastError = :lastError,
-               e.status = 'pending'
+               e.status = :status
              where e.transactionId = :id
             """)
-    int markFailed(@Param("id") UUID transactionId, @Param("lastError") String lastError);
+    int markFailed(@Param("id") UUID transactionId, @Param("lastError") String lastError,
+                   @Param("status") WalletOutboxMessage.Status status);
 }
