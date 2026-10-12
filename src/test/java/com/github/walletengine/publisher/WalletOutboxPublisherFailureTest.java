@@ -27,15 +27,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Checks publisher failure handling against real Postgres and an unreachable broker
- * (a RabbitTemplate pointed at a dead port; no mocks). Leftover pending rows are
- * cleared per test so a full batch of exactly this test's rows is claimed.
+ * Checks publisher failure handling
  */
 @SpringBootTest
 @ActiveProfiles("test")
 class WalletOutboxPublisherFailureTest {
 
     private static final int BATCH_SIZE = 10;
+    // mirrors WalletOutboxPublisher.MAX_ATTEMPTS
+    private static final int MAX_ATTEMPTS = 10;
 
     @Autowired
     private WalletService walletService;
@@ -73,7 +73,7 @@ class WalletOutboxPublisherFailureTest {
 
     @Test
     void brokerUnreachableMarksRowFailedAndPausesTheNextPublish() {
-        var transactionId = TestFixture.creditFreshWallets(walletService, BATCH_SIZE, 500L).getFirst();
+        var transactionId = TestFixture.creditFreshTransactions(walletService, BATCH_SIZE, 500L).getFirst();
         // a long pause: the second publish must be skipped regardless of test speed
         var publisher = publisherOn(deadBrokerTemplate(), Duration.ofHours(1));
 
@@ -93,27 +93,27 @@ class WalletOutboxPublisherFailureTest {
 
     @Test
     void rowAtTheAttemptLimitIsLeftInTheOutboxAsIs() {
-        var transactionId = TestFixture.creditFreshWallets(walletService, BATCH_SIZE, 500L).getFirst();
+        var transactionId = TestFixture.creditFreshTransactions(walletService, BATCH_SIZE, 500L).getFirst();
         // zero retry delay: every publish is allowed, so attempts can burn up to the limit
         var publisher = publisherOn(deadBrokerTemplate(), Duration.ZERO);
 
-        for (var i = 0; i < 10; i++) {
+        for (var i = 0; i < MAX_ATTEMPTS; i++) {
             publisher.publish();
         }
 
-        assertThat(outboxRepository.findById(transactionId).orElseThrow().getAttempts()).isEqualTo(10);
+        assertThat(outboxRepository.findById(transactionId).orElseThrow().getAttempts()).isEqualTo(MAX_ATTEMPTS);
 
         publisher.publish();
 
         var row = outboxRepository.findById(transactionId).orElseThrow();
 
-        assertThat(row.getAttempts()).isEqualTo(10);
+        assertThat(row.getAttempts()).isEqualTo(MAX_ATTEMPTS);
         assertThat(row.getStatus()).isEqualTo(WalletOutboxMessage.Status.PENDING);
     }
 
     @Test
     void stuckProcessingRowIsReclaimedAndRepublished() {
-        var transactionId = TestFixture.creditFreshWallets(walletService, 1, 500L).getFirst();
+        var transactionId = TestFixture.creditFreshTransactions(walletService, 1, 500L).getFirst();
 
         // simulate a crash after the claim, long before the processing timeout
         jdbcTemplate.update("""
@@ -135,7 +135,7 @@ class WalletOutboxPublisherFailureTest {
 
     @Test
     void unroutableMessageSurvivesWithReturnedError() {
-        var transactionId = TestFixture.creditFreshWallets(walletService, BATCH_SIZE, 500L).getFirst();
+        var transactionId = TestFixture.creditFreshTransactions(walletService, BATCH_SIZE, 500L).getFirst();
         var publisher = publisherOn(rabbitTemplate);
 
         amqpAdmin.removeBinding(new Binding(WalletAmqpConfiguration.QUEUE,

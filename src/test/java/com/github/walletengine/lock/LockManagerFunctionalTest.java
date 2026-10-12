@@ -18,7 +18,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Functional tests for {@link LockManager}
@@ -67,7 +69,7 @@ class LockManagerFunctionalTest {
     void acquireOnHeldLockTimesOutAfterConfiguredBudget() {
         var key = newKey();
 
-        try (var holder = lockManager.acquire(key, Duration.ofSeconds(5));) {
+        try (var holder = lockManager.acquire(key, Duration.ofSeconds(5))) {
             var start = System.nanoTime();
 
             assertThatThrownBy(() -> lockManager.acquire(key, Duration.ofSeconds(5)))

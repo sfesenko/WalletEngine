@@ -17,12 +17,6 @@ import static com.github.walletengine.TestFixture.drainEvents;
 import static com.github.walletengine.TestFixture.findEvent;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Checks the outbox publisher against real Postgres and RabbitMQ (Docker Compose
- * infrastructure, {@code test} profile). The queue is drained dynamically: the shared
- * database holds other tests' rows, so only this test's own transaction ids are
- * asserted, never absolute counts.
- */
 @SpringBootTest
 @ActiveProfiles("test")
 class WalletOutboxPublisherTest {

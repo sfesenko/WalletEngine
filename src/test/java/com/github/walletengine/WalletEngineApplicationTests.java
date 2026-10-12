@@ -15,8 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Smoke test for the project skeleton.
- * Runs with docker-compose, containers are left running after
+ * Smoke test of the application skeleton:
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -37,7 +36,7 @@ class WalletEngineApplicationTests {
     void ledgerIsAppendOnly(String sql) {
         var walletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
-        long amount = 100L;
+        var amount = 100L;
 
         jdbcTemplate.update("insert into wallets (wallet_id) values (?)", walletId);
         jdbcTemplate.update("insert into wallet_ledger (transaction_id, wallet_id, amount) values (?, ?, ?)",

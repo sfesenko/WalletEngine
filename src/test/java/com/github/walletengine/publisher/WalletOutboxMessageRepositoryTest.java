@@ -16,9 +16,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Checks the outbox queries against the real database (Docker Compose infrastructure,
- * {@code test} profile). Rows are filtered to the transaction ids each test creates,
- * because the shared database holds other tests' rows.
+ * Checks the outbox queries.
  */
 @SpringBootTest
 @ActiveProfiles("test")

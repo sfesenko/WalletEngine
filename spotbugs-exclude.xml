@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- generated gRPC/protobuf sources: not ours to fix -->
+    <Match>
+        <Class name="~com\.github\.walletengine\.grpc\.wallet\.v1\..*"/>
+    </Match>
+    <!-- Spring-injected collaborators stored in singleton services: standard DI pattern -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Class name="com.github.walletengine.lock.LockManager"/>
+    </Match>
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Class name="com.github.walletengine.publisher.WalletOutboxPublisher"/>
+    </Match>
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+        <Class name="com.github.walletengine.wallet.WalletService"/>
+    </Match>
+    <!-- constructor validation throws on invalid configuration: intentional fail-fast -->
+    <Match>
+        <Bug pattern="CT_CONSTRUCTOR_THROW"/>
+        <Class name="com.github.walletengine.publisher.WalletOutboxPublisher"/>
+    </Match>
+</FindBugsFilter>

@@ -4,6 +4,7 @@ import com.github.walletengine.grpc.wallet.v1.CreateWalletRequest;
 import com.github.walletengine.grpc.wallet.v1.GetBalanceRequest;
 import com.github.walletengine.grpc.wallet.v1.TransactionRequest;
 import com.github.walletengine.grpc.wallet.v1.WalletServiceGrpc;
+import com.github.walletengine.lock.LockManager;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,8 +18,6 @@ import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.grpc.client.GrpcChannelFactory;
 import org.springframework.test.context.ActiveProfiles;
 
-import com.github.walletengine.lock.LockManager;
-
 import java.time.Duration;
 import java.util.UUID;
 
@@ -26,9 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * End-to-end checks of the gRPC layer over the in-process transport against real
- * services: request validation and error mapping of
- * {@link WalletGrpcServiceExceptionAdvice}. No mocks.
+ * End-to-end checks of the gRPC layer.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -47,8 +44,6 @@ class WalletGrpcFunctionalTest {
 
     @Autowired
     private LockManager lockManager;
-
-    private final WalletGrpcServiceExceptionAdvice advice = new WalletGrpcServiceExceptionAdvice();
 
     private WalletServiceGrpc.WalletServiceBlockingStub stub;
 
@@ -201,6 +196,7 @@ class WalletGrpcFunctionalTest {
 
     @Test
     void redisConnectionFailuresAreMappedToUnavailable() {
+        var advice = new WalletGrpcServiceExceptionAdvice();
         var status = advice.onResourceFailure(new RedisConnectionFailureException("redis is down"));
 
         assertThat(status.getCode()).isEqualTo(Status.Code.UNAVAILABLE);

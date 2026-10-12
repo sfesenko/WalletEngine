@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verify strict idempotency ({@code wallet.idempotency.strict=true}): a duplicate request for a
- * rejected movement returns the stored rejection without re-executing the movement..
+ * rejected movement returns the stored rejection without re-executing the movement.
  */
 @SpringBootTest(properties = "wallet.idempotency.strict=true")
 @ActiveProfiles("test")

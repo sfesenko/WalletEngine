@@ -3,18 +3,18 @@ package com.github.walletengine;
 import com.github.walletengine.publisher.WalletAmqpConfiguration;
 import com.github.walletengine.publisher.WalletUpdatedEvent;
 import com.github.walletengine.wallet.WalletService;
+import com.github.walletengine.wallet.WalletTransaction;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
- * Shared helpers for functional outbox tests. All tests run against real
- * Postgres + RabbitMQ, so helpers only filter to the caller's own ids —
- * never absolute counts.
+ * Shared helpers for the wallet and outbox functional tests.
  */
-    public final class TestFixture {
+public final class TestFixture {
 
     private TestFixture() {
     }
@@ -29,7 +29,7 @@ import java.util.UUID;
         return transactionId;
     }
 
-    public static List<UUID> creditFreshWallets(WalletService walletService, int count, long amount) {
+    public static List<UUID> creditFreshTransactions(WalletService walletService, int count, long amount) {
         var walletId = UUID.randomUUID();
 
         walletService.createWallet(walletId);
@@ -42,6 +42,29 @@ import java.util.UUID;
         }
 
         return transactionIds;
+    }
+
+    public static WalletTransaction perform(
+            WalletService walletService,
+            String operation,
+            UUID transactionId, UUID walletId, long amount) {
+        return switch (normalized(operation)) {
+            case "debit" -> walletService.debit(transactionId, walletId, amount);
+            case "credit" -> walletService.credit(transactionId, walletId, amount);
+            default -> throw new IllegalArgumentException("unknown operation: " + operation);
+        };
+    }
+
+    public static long signedAmount(String operation, long amount) {
+        return switch (normalized(operation)) {
+            case "debit" -> -amount;
+            case "credit" -> amount;
+            default -> throw new IllegalArgumentException("unknown operation: " + operation);
+        };
+    }
+
+    private static String normalized(String operation) {
+        return operation.strip().toLowerCase(Locale.ROOT);
     }
 
     public static List<WalletUpdatedEvent> drainEvents(RabbitTemplate rabbitTemplate) {
@@ -62,12 +85,9 @@ import java.util.UUID;
     }
 
     public static WalletUpdatedEvent findEvent(List<WalletUpdatedEvent> events, UUID transactionId) {
-        for (var event : events) {
-            if (event.transactionId().equals(transactionId)) {
-                return event;
-            }
-        }
-
-        return null;
+        return events.stream()
+                .filter(event -> event.transactionId().equals(transactionId))
+                .findFirst()
+                .orElse(null);
     }
 }

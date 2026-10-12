@@ -23,8 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Checks that two publisher instances draining the same outbox never publish the same
- * event twice (SKIP LOCKED claim semantics), against real Postgres and RabbitMQ. The
- * scheduled pollers are off in the test profile, so only the two instances here publish.
+ * event twice.
  */
 @SpringBootTest
 @ActiveProfiles("test")

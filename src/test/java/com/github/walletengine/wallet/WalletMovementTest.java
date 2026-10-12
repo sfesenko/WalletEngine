@@ -1,5 +1,6 @@
 package com.github.walletengine.wallet;
 
+import com.github.walletengine.TestFixture;
 import com.github.walletengine.publisher.WalletOutboxMessageRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -15,8 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Checks wallet lifecycle and movements ({@code debit}, {@code credit}) against
- * the real database (Docker Compose infrastructure, {@code test} profile).
+ * Checks wallet lifecycle and movements.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -51,11 +51,7 @@ class WalletMovementTest {
             walletService.credit(fundingId, walletId, funded);
         }
 
-        var entry = switch (operation.strip()) {
-            case "debit" -> walletService.debit(transactionId, walletId, amount);
-            case "credit" -> walletService.credit(transactionId, walletId, amount);
-            default -> throw new IllegalArgumentException("unknown operation: " + operation);
-        };
+        var entry = TestFixture.perform(walletService, operation, transactionId, walletId, amount);
 
         assertThat(entry.getTransactionId()).isEqualTo(transactionId);
         assertThat(entry.getWalletId()).isEqualTo(walletId);
@@ -97,14 +93,8 @@ class WalletMovementTest {
             default -> throw new IllegalArgumentException("unknown exception: " + exception);
         };
 
-        var op = operation.strip();
-        assertThatThrownBy(() -> {
-            if (op.equals("debit")) {
-                walletService.debit(transactionId, walletId, amount);
-            } else {
-                walletService.credit(transactionId, walletId, amount);
-            }
-        }).isInstanceOf(expected);
+        assertThatThrownBy(() -> TestFixture.perform(walletService, operation, transactionId, walletId, amount))
+                .isInstanceOf(expected);
 
         assertThat(ledgerRepository.findById(transactionId)).isEmpty();
         assertThat(outboxRepository.findById(transactionId)).isEmpty();

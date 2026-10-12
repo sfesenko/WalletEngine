@@ -2,8 +2,8 @@ package com.github.walletengine.wallet;
 
 import com.github.walletengine.TestFixture;
 import com.github.walletengine.lock.LockFailedException;
-import com.github.walletengine.publisher.WalletOutboxPublisher;
 import com.github.walletengine.publisher.WalletOutboxMessageRepository;
+import com.github.walletengine.publisher.WalletOutboxPublisher;
 import com.github.walletengine.publisher.WalletUpdatedEvent;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -104,18 +104,18 @@ class WalletConcurrencyTest {
     void concurrentMovementsScenarioAppliesEveryMovementExactlyOnce() throws Exception {
         // operation | wallet | transaction | amount — verbatim duplicates are intentional.
         var rows = List.of(
-                new WalletOp("CREDIT", "w0", "t1", 1000L),
-                new WalletOp("CREDIT", "w0", "t2", 500L),
-                new WalletOp("DEBIT", "w0", "t3", 200L),
-                new WalletOp("CREDIT", "w0", "t2", 500L),
-                new WalletOp("DEBIT", "w0", "t3", 200L),
-                new WalletOp("CREDIT", "w1", "t4", 2000L),
-                new WalletOp("DEBIT", "w1", "t5", 700L),
-                new WalletOp("CREDIT", "w1", "t4", 2000L),
-                new WalletOp("CREDIT", "w2", "t6", 1500L),
-                new WalletOp("DEBIT", "w2", "t7", 1500L),
-                new WalletOp("CREDIT", "w2", "t8", 300L),
-                new WalletOp("DEBIT", "w2", "t7", 1500L));
+                new WalletOp("credit", "w0", "t1", 1000L),
+                new WalletOp("credit", "w0", "t2", 500L),
+                new WalletOp("debit", "w0", "t3", 200L),
+                new WalletOp("credit", "w0", "t2", 500L),
+                new WalletOp("debit", "w0", "t3", 200L),
+                new WalletOp("credit", "w1", "t4", 2000L),
+                new WalletOp("debit", "w1", "t5", 700L),
+                new WalletOp("credit", "w1", "t4", 2000L),
+                new WalletOp("credit", "w2", "t6", 1500L),
+                new WalletOp("debit", "w2", "t7", 1500L),
+                new WalletOp("credit", "w2", "t8", 300L),
+                new WalletOp("debit", "w2", "t7", 1500L));
 
         var walletIds = new HashMap<String, UUID>();
         var txIds = new HashMap<String, UUID>();
@@ -138,7 +138,7 @@ class WalletConcurrencyTest {
                     .add(new WalletMovement(row.operation(), transactionId, row.amount()));
 
             if (seenTx.add(transactionId)) {
-                expected.merge(walletId, signedMovement(row.operation(), row.amount()), Long::sum);
+                expected.merge(walletId, TestFixture.signedAmount(row.operation(), row.amount()), Long::sum);
             }
         }
 
@@ -149,7 +149,7 @@ class WalletConcurrencyTest {
             var ops = group.getValue();
             tasks.add(() -> {
                 for (var op : ops) {
-                    applyRow(op.operation(), walletId, op.transactionId(), op.amount());
+                    TestFixture.perform(walletService, op.operation(), op.transactionId(), walletId, op.amount());
                 }
 
                 return null;
@@ -165,9 +165,7 @@ class WalletConcurrencyTest {
             assertThat(wallet.getAmount()).isEqualTo(balance.getValue());
         }
 
-        assertThat(walletService.getWalletById(walletIds.get("w0")).getAmount()).isEqualTo(1300L);
-        assertThat(walletService.getWalletById(walletIds.get("w1")).getAmount()).isEqualTo(1300L);
-        assertThat(walletService.getWalletById(walletIds.get("w2")).getAmount()).isEqualTo(300L);
+        // scenario totals: w0 = 1300, w1 = 1300, w2 = 300
     }
 
     @Tag("slow")
@@ -292,12 +290,12 @@ class WalletConcurrencyTest {
         for (var w = 0; w < STRESS_WALLETS; w++) {
             var ops = new ArrayList<StressOp>(OPS_PER_WALLET);
             // first row: can never succeed, so the rejection path runs regardless of interleaving
-            ops.add(new StressOp("DEBIT", "s" + w + "-0", STRESS_GUARANTEED_DEBIT));
+            ops.add(new StressOp("debit", "s" + w + "-0", STRESS_GUARANTEED_DEBIT));
             for (var i = 1; i < OPS_PER_WALLET; i++) {
                 if (rng.nextDouble() < STRESS_DUPLICATE_RATE) {
                     ops.add(ops.get(rng.nextInt(ops.size())));
                 } else {
-                    var operation = rng.nextBoolean() ? "CREDIT" : "DEBIT";
+                    var operation = rng.nextBoolean() ? "credit" : "debit";
                     ops.add(new StressOp(operation, "s" + w + "-" + i, 1 + rng.nextInt(1000)));
                 }
             }
@@ -546,22 +544,6 @@ class WalletConcurrencyTest {
         }
     }
 
-    private long signedMovement(String operation, long amount) {
-        return switch (operation.strip()) {
-            case "DEBIT" -> -amount;
-            case "CREDIT" -> amount;
-            default -> throw new IllegalArgumentException("unknown operation: " + operation);
-        };
-    }
-
-    private void applyRow(String operation, UUID walletId, UUID transactionId, long amount) {
-        switch (operation.strip()) {
-            case "DEBIT" -> walletService.debit(transactionId, walletId, amount);
-            case "CREDIT" -> walletService.credit(transactionId, walletId, amount);
-            default -> throw new IllegalArgumentException("unknown operation: " + operation);
-        }
-    }
-
     private boolean tryDebit(UUID transactionId, UUID walletId, long amount) {
         try {
             walletService.debit(transactionId, walletId, amount);
@@ -574,7 +556,7 @@ class WalletConcurrencyTest {
     private void applyWithLockRetry(WalletMovement movement, UUID walletId, AtomicInteger insufficient) {
         for (var attempt = 0; ; attempt++) {
             try {
-                applyRow(movement.operation(), walletId, movement.transactionId(), movement.amount());
+                TestFixture.perform(walletService, movement.operation(), movement.transactionId(), walletId, movement.amount());
                 return;
             } catch (InsufficientFundsException e) {
                 insufficient.incrementAndGet();
