@@ -34,10 +34,8 @@ alter table wallets
 alter table wallet_ledger
     add constraint wallet_ledger_amount_nonzero check (amount <> 0);
 
--- Strict idempotency (wallet.idempotency.strict=true): state-dependent movement rejections,
--- replayed on duplicate requests instead of re-executing the movement.
--- No FK on wallet_id: WALLET_NOT_FOUND rejections reference wallets that do not exist.
-create table rejected_movements (
+-- failed transactions, for strict idempotency mode
+create table wallet_failed_transactions (
     transaction_id uuid primary key,
     wallet_id      uuid        not null,
     amount         bigint      not null,

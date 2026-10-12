@@ -18,14 +18,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.*;
 
 /**
- * Functional tests for {@link LockManager} against the real Redis instance started
- * from Docker Compose by the {@code test} profile (same pattern as
- * {@code WalletConcurrencyTest}). No mocks.
+ * Functional tests for {@link LockManager}
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -59,18 +55,19 @@ class LockManagerFunctionalTest {
     void acquireStoresPayloadAndReleaseRemovesKey() {
         var key = newKey();
 
-        var lock = lockManager.acquire(key, Duration.ofSeconds(5));
+        try (var lock = lockManager.acquire(key, Duration.ofSeconds(5))) {
+            assertThat(redis.hasKey(lockKey(key))).isTrue();
+            lock.release();
+        }
 
-        assertThat(redis.hasKey(lockKey(key))).isTrue();
-        lock.release();
         assertThat(redis.hasKey(lockKey(key))).isFalse();
     }
 
     @Test
     void acquireOnHeldLockTimesOutAfterConfiguredBudget() {
         var key = newKey();
-        var holder = lockManager.acquire(key, Duration.ofSeconds(5));
-        try {
+
+        try (var holder = lockManager.acquire(key, Duration.ofSeconds(5));) {
             var start = System.nanoTime();
 
             assertThatThrownBy(() -> lockManager.acquire(key, Duration.ofSeconds(5)))
@@ -80,8 +77,6 @@ class LockManagerFunctionalTest {
             // budget would fail this duration assertion.
             var elapsed = Duration.ofNanos(System.nanoTime() - start);
             assertThat(elapsed).isLessThan(Duration.ofSeconds(5));
-        } finally {
-            holder.release();
         }
     }
 
@@ -138,12 +133,10 @@ class LockManagerFunctionalTest {
             }
             case "releaseQuiet" -> assertThatCode(stale::release).doesNotThrowAnyException();
             case "staleReleaseKeepsOwner" -> {
-                var owner = lockManager.acquire(key, Duration.ofSeconds(5));
-
-                stale.release(); // quiet no-op, must not delete the owner's lock
-                assertThat(redis.hasKey(lockKey(key))).isTrue();
-
-                owner.release();
+                try (var owner = lockManager.acquire(key, Duration.ofSeconds(5))) {
+                    stale.release(); // quiet no-op, must not delete the owner's lock
+                    assertThat(redis.hasKey(lockKey(key))).isTrue();
+                }
             }
             default -> throw new IllegalArgumentException("unknown scenario: " + scenario);
         }

@@ -11,6 +11,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -28,7 +29,6 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,6 +70,9 @@ class WalletConcurrencyTest {
     @Autowired
     private RabbitTemplate rabbitTemplate;
 
+    @Value("${wallet.idempotency.strict}")
+    private boolean strictIdempotency;
+
     @Test
     void concurrentDebitsNeverDriveBalanceNegative() throws Exception {
         var walletId = UUID.randomUUID();
@@ -88,12 +91,7 @@ class WalletConcurrencyTest {
 
         var results = runConcurrently(tasks, threadCount);
 
-        var successes = 0;
-        for (var applied : results) {
-            if (applied) {
-                successes++;
-            }
-        }
+        var successes = results.stream().filter(it -> it).count();
 
         var moved = successes * debitAmount;
         var wallet = walletService.getWalletById(walletId);
@@ -179,10 +177,12 @@ class WalletConcurrencyTest {
 
         var walletIds = new HashMap<String, UUID>();
         var txIds = new HashMap<String, UUID>();
+        var walletByTx = new HashMap<UUID, UUID>();
         for (var entry : opsByWalletKey.entrySet()) {
-            walletIds.computeIfAbsent(entry.getKey(), k -> UUID.randomUUID());
+            var walletId = walletIds.computeIfAbsent(entry.getKey(), k -> UUID.randomUUID());
             for (var op : entry.getValue()) {
                 txIds.computeIfAbsent(op.txKey(), k -> UUID.randomUUID());
+                walletByTx.put(txIds.get(op.txKey()), walletId);
             }
         }
         for (var walletId : walletIds.values()) {
@@ -261,6 +261,28 @@ class WalletConcurrencyTest {
                 assertThat(eventsByTx.get(txId)).isNull();
             }
         }
+
+        // mode-aware bookkeeping: strict records every state-dependent rejection exactly once
+        // (transaction_id is the PK); non-strict leaves no trace. Applied txs are never recorded.
+        var rejectedByTx = new HashMap<UUID, RejectedRow>();
+        for (var row : jdbcTemplate.query(
+                "select transaction_id, wallet_id, amount from wallet_failed_transactions",
+                (rs, n) -> Map.entry(rs.getObject("transaction_id", UUID.class),
+                        new RejectedRow(rs.getObject("wallet_id", UUID.class), rs.getLong("amount"))))) {
+            rejectedByTx.put(row.getKey(), row.getValue());
+        }
+        for (var txId : ownTxIds) {
+            var applied = ledgerByWallet.values().stream().anyMatch(byTx -> byTx.containsKey(txId));
+            if (applied) {
+                assertThat(rejectedByTx).doesNotContainKey(txId);
+            } else if (strictIdempotency) {
+                assertThat(rejectedByTx).containsKey(txId);
+                assertThat(rejectedByTx.get(txId).walletId()).isEqualTo(walletByTx.get(txId));
+                assertThat(rejectedByTx.get(txId).amount()).isNegative();
+            } else {
+                assertThat(rejectedByTx).doesNotContainKey(txId);
+            }
+        }
     }
 
     private static Map<String, List<StressOp>> stressOps() {
@@ -294,7 +316,7 @@ class WalletConcurrencyTest {
             walletService.createWallet(walletId);
 
             var start = new CyclicBarrier(2);
-            try (var pool = Executors.newFixedThreadPool(2)) {
+            try (var executor = Executors.newFixedThreadPool(2)) {
                 var tasks = new ArrayList<Callable<WalletTransaction>>(2);
                 for (var t = 0; t < 2; t++) {
                     tasks.add(() -> {
@@ -303,7 +325,7 @@ class WalletConcurrencyTest {
                     });
                 }
 
-                var futures = pool.invokeAll(tasks);
+                var futures = executor.invokeAll(tasks);
                 var first = futures.getFirst().get(10, TimeUnit.SECONDS);
                 var second = futures.getLast().get(10, TimeUnit.SECONDS);
 
@@ -398,6 +420,9 @@ class WalletConcurrencyTest {
     }
 
     private record RaceOutcome(WalletTransaction value, RuntimeException failure) {
+    }
+
+    private record RejectedRow(UUID walletId, long amount) {
     }
 
     /** Winner commits only after the service call is blocked on the wallet row. */
@@ -509,7 +534,7 @@ class WalletConcurrencyTest {
     }
 
     private <T> List<T> runConcurrently(List<Callable<T>> tasks, int threads) throws Exception {
-        try (ExecutorService pool = Executors.newFixedThreadPool(threads)) {
+        try (var pool = Executors.newFixedThreadPool(threads)) {
             var futures = pool.invokeAll(tasks);
 
             var results = new ArrayList<T>(tasks.size());

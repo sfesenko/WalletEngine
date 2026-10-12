@@ -13,7 +13,7 @@ import java.util.UUID;
  */
 @Immutable
 @Entity
-@Table(name = "rejected_movements")
+@Table(name = "wallet_failed_transactions")
 public class WalletFailedTransaction implements Persistable<UUID> {
 
     public enum Error {
