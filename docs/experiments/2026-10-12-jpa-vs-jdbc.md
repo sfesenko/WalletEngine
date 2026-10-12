@@ -30,7 +30,7 @@ fairness anchor and was kept byte-identical.
 | Metric | JPA (master) | Spring Data JDBC (branch) |
 |---|---|---|
 | Files touched by the swap | — | 11 (`+82 / −167` lines) |
-| Production Java LOC (`src/main`) | 1412 | 1331 (**−81**) |
+| Production Java LOC (`src/main`, sum of per-file line counts) | 1411 | 1330 (**−81**) |
 | Mapping annotations in the 4 entity classes | 51 | 10 |
 | Framework import lines in the 4 entities | 30 | 14 |
 | Persistence-context escape hatches (`clearAutomatically`, `flushAutomatically`, `saveAndFlush`, `nativeQuery`) | 9 | **0** |
@@ -42,7 +42,7 @@ fairness anchor and was kept byte-identical.
 | Concern | JPA today | Spring Data JDBC | Verdict |
 |---|---|---|---|
 | Entity mapping | `@Entity`/`@Table` + `@Column` on every field (`name`, `nullable`) | `@Table` + `@Id`; columns via snake_case convention (`@Column` only where the schema deviates — exactly one case: `error_code`) | **JDBC**: 51 → 10 annotations; conventions replace repetition |
-| Newness detection | `Persistable` + `isNew` field + `@PostLoad`/`@PostPersist` callbacks | `Persistable` with constant `isNew() == true` (every `save()` is an insert; guarded UPDATE queries handle all mutations) | **JDBC**: 3 fields, 4 callbacks, all `@Transient` gone; a stray `save()` on an existing row now fails loudly on the PK instead of silently merging |
+| Newness detection | `Persistable` + `isNew` field + `@PostLoad`/`@PostPersist` callbacks | `Persistable` with constant `isNew() == true` (every `save()` is an insert; guarded UPDATE queries handle all mutations) | **JDBC**: the 4 `isNew` fields and 4 lifecycle callbacks disappear, taking all `@Transient` uses with them; a stray `save()` on an existing row now fails loudly on the PK instead of silently merging |
 | Timestamps | Hibernate `@CreationTimestamp` (set in memory) | `Instant.now()` in the constructor | **Tie**: JPA is shorter per field; JDBC is explicit and framework-free |
 | DB-generated `seq` (bigserial) | `insertable=false, updatable=false` | `@ReadOnlyProperty` | **Tie**: same intent, comparable cost |
 | Enums | `@Enumerated(EnumType.STRING)` ×2 | none — enums map to names by default | **JDBC**: annotation deleted, behavior identical (verified) |
@@ -97,7 +97,7 @@ is identical on both sides.
 | JDBC run 3 | 64 s | 50.2 s |
 | **JDBC median** | **66 s** | **52.4 s** |
 
-Per-class medians (seconds):
+Per-class medians of testcase times (seconds — excludes class-level context startup, see below):
 
 | Test class | JPA | JDBC | Δ |
 |---|---|---|---|
@@ -106,18 +106,23 @@ Per-class medians (seconds):
 | `WalletOutboxPublisherConcurrencyTest` (slow) | 3.21 | 3.22 | ~0 |
 | `LockManagerFunctionalTest` | 3.24 | 3.24 | ~0 |
 | `WalletGrpcFunctionalTest` | 2.65 | 2.58 | −2.6 % |
-| `WalletEngineApplicationTests` (context startup) | 0.42 | 0.59 | +39 % (0.2 s absolute) |
 | `WalletMovementTest` | 0.24 | 0.25 | +4 % |
 | `WalletIdempotencyStrictTest` | 0.14 | 0.14 | 0 |
 | `WalletOutboxPublisherFailureTest` | 0.25 | 0.25 | 0 |
 | `WalletOutboxMessageRepositoryTest` | 0.11 | 0.10 | −14 % (0.01 s absolute) |
 
-**Reading:** the two implementations are performance-equivalent within noise (JPA's `results` spread alone is
-51–60 s run to run). The only >5 % signal — JDBC ~7 % faster on the concurrency stress test — is plausible
-(no persistence-context/flush machinery on the write path) but not conclusive at n=3; treat it as "no
-regression, possibly slight edge". Caveats: single machine, shared database state, JIT/context-cache jitter;
-one master-checkout run directory contained a stale surefire XML from a previous build that was excluded from
-the analysis — every run was re-verified to execute exactly 77 tests before numbers were taken.
+**Context startup is the clearest framework-level difference.** Class-level time of `WalletEngineApplicationTests`
+(boots the full Spring context): JPA median **7.70 s** (6.999 / 7.707 / 7.696) vs JDBC **5.81 s**
+(5.693 / 5.810 / 6.121) — **−25 % / −1.9 s** on JDBC, consistent with dropping Hibernate's
+`EntityManagerFactory` and JPA bootstrap.
+
+**Reading:** the two implementations are performance-equivalent in the test bodies (JPA's own run-to-run spread
+alone is 51–60 s; per-class spreads overlap, and the only >5 % signal — JDBC ~7 % faster on the concurrency
+stress suite — is plausible given no persistence-context/flush machinery on the write path, but not conclusive
+at n=3). The overall wall-time edge (69 s → 66 s) comes mostly from faster context startup. **Net: no
+regression, small genuine edge to JDBC.** Caveats: single machine, shared database state, JIT/context-cache
+jitter; one master-checkout run directory contained a stale surefire XML from a previous build that was excluded
+from the analysis — every run was re-verified to execute exactly 77 tests before numbers were taken.
 
 ## Recommendation
 
@@ -128,7 +133,7 @@ guarded UPDATE statements — **Spring Data JDBC is the simpler and cleaner fit*
 - the persistence-context escape hatches (flush/clear flags, `saveAndFlush`, entity callbacks) disappear,
   removing a class of subtle bugs rather than adding one,
 - behavior is identical: the unchanged 77-test suite passes, concurrency stress included,
-- performance is equivalent (within noise) — the hot path was already an explicit UPDATE in both.
+- performance is equal in the test bodies and ~1.9 s better on context startup; the hot path was already an explicit UPDATE in both.
 
 What JPA still offers that this project uses or could use: startup schema validation (`ddl-auto=validate`),
 richer tooling, and a more common contributor skill set. If the direction is taken, the follow-ups are:
@@ -136,6 +141,12 @@ replace the lost schema validation with a lightweight check (e.g. a schema-asser
 update `README.md`/`docs` stack mentions, and team alignment. A "keep JPA" decision is defensible only if the
 roadmap moves toward real object graphs, lazy loading, or JPQL-driven querying — none of which this domain
 needs; an append-only ledger wants plain SQL.
+
+**Where a hybrid would land:** if the roadmap ever splits — say, JPA for a future reporting/query subsystem
+with real object graphs, while the wallet hot path stays hand-written SQL — a two-stack setup is technically
+possible (both can share the datasource) but not worth it here: it doubles the persistence toolchain and its
+conventions while nothing current needs Hibernate's graph features. A single stack should win, and for this
+domain that stack is JDBC; revisit the hybrid only when a bounded-context genuinely demands an ORM.
 
 **Recommendation: adopt Spring Data JDBC if simplicity matters more than Hibernate's tooling; it is a strict
 simplification here, with one safety net (schema validation) to consciously replace.**
