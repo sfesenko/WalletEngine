@@ -1,22 +1,14 @@
 package com.github.walletengine.publisher;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Id;
-import jakarta.persistence.PostLoad;
-import jakarta.persistence.PostPersist;
-import jakarta.persistence.Table;
-import jakarta.persistence.Transient;
-import org.hibernate.annotations.CreationTimestamp;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.ReadOnlyProperty;
 import org.springframework.data.domain.Persistable;
+import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.Instant;
 import java.util.UUID;
 
-@Entity
-@Table(name = "wallet_outbox")
+@Table("wallet_outbox")
 public class WalletOutboxMessage implements Persistable<UUID> {
 
     public enum Status {
@@ -24,37 +16,26 @@ public class WalletOutboxMessage implements Persistable<UUID> {
     }
 
     @Id
-    @Column(name = "transaction_id", nullable = false)
     private UUID transactionId;
 
-    @Column(name = "wallet_id", nullable = false)
     private UUID walletId;
 
-    @Column(name = "amount", nullable = false)
     private long amount;
 
-    @Column(name = "seq", nullable = false, insertable = false, updatable = false)
+    /** bigserial assigned by the database; read on load, never written. */
+    @ReadOnlyProperty
     private long seq;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false)
     private Status status;
 
-    @Column(name = "attempts", nullable = false)
     private int attempts;
 
-    @Column(name = "last_error")
     private String lastError;
 
-    @CreationTimestamp
-    @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
-    @Transient
-    private boolean isNew;
-
     protected WalletOutboxMessage() {
-        // for JPA
+        // for Spring Data
     }
 
     public WalletOutboxMessage(UUID transactionId, UUID walletId, long amount) {
@@ -62,7 +43,7 @@ public class WalletOutboxMessage implements Persistable<UUID> {
         this.walletId = walletId;
         this.amount = amount;
         this.status = Status.PENDING;
-        this.isNew = true;
+        this.createdAt = Instant.now();
     }
 
     @Override
@@ -70,15 +51,13 @@ public class WalletOutboxMessage implements Persistable<UUID> {
         return transactionId;
     }
 
+    /**
+     * Always an insert: outbox rows are created once; status/attempt changes go through the
+     * guarded modifying queries, and the primary key guards duplicates.
+     */
     @Override
     public boolean isNew() {
-        return isNew;
-    }
-
-    @PostLoad
-    @PostPersist
-    void markNotNew() {
-        this.isNew = false;
+        return true;
     }
 
     public UUID getTransactionId() {

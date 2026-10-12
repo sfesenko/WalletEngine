@@ -71,8 +71,8 @@ public class WalletService {
     public Wallet createWallet(UUID walletId) {
         var wallet = new Wallet(walletId);
         try {
-            // use saveAndFlush to force constraint validation inside transaction
-            return walletRepository.saveAndFlush(wallet);
+            // save() inserts immediately, so a duplicate wallet_id is rejected inside this transaction
+            return walletRepository.save(wallet);
         } catch (DataIntegrityViolationException e) {
             throw new WalletAlreadyExistsException(walletId);
         }

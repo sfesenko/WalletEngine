@@ -1,9 +1,9 @@
 package com.github.walletengine.wallet;
 
-import jakarta.persistence.*;
-import org.hibernate.annotations.CreationTimestamp;
-import org.hibernate.annotations.Immutable;
+import org.springframework.data.annotation.Id;
 import org.springframework.data.domain.Persistable;
+import org.springframework.data.relational.core.mapping.Column;
+import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -11,9 +11,7 @@ import java.util.UUID;
 /**
  * Failed transaction
  */
-@Immutable
-@Entity
-@Table(name = "rejected_movements")
+@Table("rejected_movements")
 public class WalletFailedTransaction implements Persistable<UUID> {
 
     public enum Error {
@@ -21,31 +19,19 @@ public class WalletFailedTransaction implements Persistable<UUID> {
     }
 
     @Id
-    @Column(name = "transaction_id", nullable = false)
     private UUID transactionId;
 
-    @Column(name = "wallet_id", nullable = false)
     private UUID walletId;
 
-    @Column(name = "amount", nullable = false)
     private long amount;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "error_code", nullable = false)
+    @Column("error_code")
     private Error error;
 
-    @CreationTimestamp
-    @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
-    /**
-     * Makes {@code save} persist instead of merge — see {@link WalletTransaction}.
-     */
-    @Transient
-    private boolean isNew;
-
     protected WalletFailedTransaction() {
-        // for JPA
+        // for Spring Data
     }
 
     public WalletFailedTransaction(UUID transactionId, UUID walletId, long amount, Error error) {
@@ -53,7 +39,7 @@ public class WalletFailedTransaction implements Persistable<UUID> {
         this.walletId = walletId;
         this.amount = amount;
         this.error = error;
-        this.isNew = true;
+        this.createdAt = Instant.now();
     }
 
     @Override
@@ -61,14 +47,12 @@ public class WalletFailedTransaction implements Persistable<UUID> {
         return transactionId;
     }
 
+    /**
+     * Always an insert: rejected movements are written once and never updated.
+     */
     @Override
     public boolean isNew() {
-        return isNew;
-    }
-
-    @PostPersist
-    void markNotNew() {
-        this.isNew = false;
+        return true;
     }
 
     public UUID getTransactionId() {
