@@ -53,6 +53,12 @@ class LockManagerFunctionalTest {
         return "wallet_engine_" + key;
     }
 
+    private LockManager.Lock expiredLock(String key) throws InterruptedException {
+        var lock = lockManager.acquire(key, Duration.ofMillis(100));
+        Thread.sleep(250); // stale lock expires
+        return lock;
+    }
+
     @Test
     void acquireStoresPayloadAndReleaseRemovesKey() {
         var key = newKey();
@@ -107,40 +113,43 @@ class LockManagerFunctionalTest {
         lock.release();
     }
 
-    @ParameterizedTest
-    @CsvSource(value = {
-            "checkExpired          ",
-            "checkTakenOver        ",
-            "releaseQuiet          ",
-            "staleReleaseKeepsOwner",
-    }, delimiter = '|')
-    void ttlExpiryBehaviour(String scenario) throws Exception {
+    @Test
+    void checkFailsAfterTtlExpires() throws Exception {
         var key = newKey();
-        var stale = lockManager.acquire(key, Duration.ofMillis(100));
+        var stale = expiredLock(key);
 
-        Thread.sleep(250); // stale lock expires
+        assertThat(redis.hasKey(lockKey(key))).isFalse();
+        assertThatThrownBy(stale::check).isInstanceOf(LockFailedException.class);
+    }
 
-        switch (scenario.strip()) {
-            case "checkExpired" -> {
-                assertThat(redis.hasKey(lockKey(key))).isFalse();
-                assertThatThrownBy(stale::check).isInstanceOf(LockFailedException.class);
-            }
-            case "checkTakenOver" -> {
-                var owner = lockManager.acquire(key, Duration.ofSeconds(5));
+    @Test
+    void checkFailsAfterTakeover() throws Exception {
+        var key = newKey();
+        var stale = expiredLock(key);
+        var owner = lockManager.acquire(key, Duration.ofSeconds(5));
 
-                assertThatThrownBy(stale::check).isInstanceOf(LockFailedException.class);
-                owner.check(); // the new owner is healthy
+        assertThatThrownBy(stale::check).isInstanceOf(LockFailedException.class);
+        owner.check(); // the new owner is healthy
 
-                owner.release();
-            }
-            case "releaseQuiet" -> assertThatCode(stale::release).doesNotThrowAnyException();
-            case "staleReleaseKeepsOwner" -> {
-                try (var owner = lockManager.acquire(key, Duration.ofSeconds(5))) {
-                    stale.release(); // quiet no-op, must not delete the owner's lock
-                    assertThat(redis.hasKey(lockKey(key))).isTrue();
-                }
-            }
-            default -> throw new IllegalArgumentException("unknown scenario: " + scenario);
+        owner.release();
+    }
+
+    @Test
+    void expiredReleaseIsQuiet() throws Exception {
+        var key = newKey();
+        var stale = expiredLock(key);
+
+        assertThatCode(stale::release).doesNotThrowAnyException();
+    }
+
+    @Test
+    void staleReleaseKeepsNewOwnerLock() throws Exception {
+        var key = newKey();
+        var stale = expiredLock(key);
+
+        try (var owner = lockManager.acquire(key, Duration.ofSeconds(5))) {
+            stale.release(); // quiet no-op, must not delete the owner's lock
+            assertThat(redis.hasKey(lockKey(key))).isTrue();
         }
     }
 

@@ -2,6 +2,8 @@ package com.github.walletengine.wallet;
 
 import com.github.walletengine.publisher.WalletOutboxMessageRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -11,6 +13,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Verify strict idempotency ({@code wallet.idempotency.strict=true}): a duplicate request for a
@@ -74,8 +77,12 @@ class WalletIdempotencyStrictTest {
         assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(500L);
     }
 
-    @Test
-    void rejectedTransactionWithConflictThrows() {
+    @ParameterizedTest
+    @CsvSource(value = {
+            "false | 100",
+            "true  | 200",
+    }, delimiter = '|')
+    void rejectedTransactionReplayedWithConflictThrows(boolean replayAgainstStoredWallet, long replayAmount) {
         var walletId = UUID.randomUUID();
         var otherWalletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
@@ -88,12 +95,14 @@ class WalletIdempotencyStrictTest {
                 .isInstanceOf(InsufficientFundsException.class);
 
         // same transaction id with a different amount or wallet is a conflict, not a replay
-        assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 200L))
-                .isInstanceOf(IllegalTransactionException.class);
+        var replayWalletId = replayAgainstStoredWallet ? walletId : otherWalletId;
+        var failure = catchThrowable(() -> walletService.debit(transactionId, replayWalletId, replayAmount));
 
-        assertThatThrownBy(() -> walletService.debit(transactionId, otherWalletId, 100L))
-                .isInstanceOf(IllegalTransactionException.class);
-
+        assertThat(failure).isInstanceOf(IllegalTransactionException.class);
+        // only the request's transaction_id may be exposed: the stored wallet / amount must not leak
+        assertThat(failure.getMessage())
+                .contains(transactionId.toString())
+                .doesNotContain(walletId.toString());
         assertThat(walletService.getWalletById(otherWalletId).getAmount()).isEqualTo(500L);
     }
 

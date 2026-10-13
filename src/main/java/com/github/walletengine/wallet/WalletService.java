@@ -49,11 +49,11 @@ public class WalletService {
         this.txTemplate = new TransactionTemplate(txManager);
     }
 
-    public WalletTransaction debit(UUID transactionId, UUID walletId, long amount) {
+    public WalletMovement debit(UUID transactionId, UUID walletId, long amount) {
         return applyMovement(transactionId, walletId, -amount);
     }
 
-    public WalletTransaction credit(UUID transactionId, UUID walletId, long amount) {
+    public WalletMovement credit(UUID transactionId, UUID walletId, long amount) {
         return applyMovement(transactionId, walletId, amount);
     }
 
@@ -83,15 +83,23 @@ public class WalletService {
     /**
      * Lock wallet an apply transaction
      */
-    private WalletTransaction applyMovement(UUID transactionId, UUID walletId, long amount) {
+    private WalletMovement applyMovement(UUID transactionId, UUID walletId, long amount) {
         try (var lock = lockManager.acquire("wallet:" + walletId, lockTtl)) {
             try {
                 var movement = txTemplate.execute(txStatus -> {
                     var result = executeMovement(transactionId, walletId, amount);
 
+                    // load wallet's balance after update
+                    // may be either folded into WalletRepository.updateWallet as native `UPDATE ... RETURNING amount`
+                    // or use Redis as wallet's balance cache
+                    // or just remove balance from response
+                    var walletAmount = walletRepository.findById(walletId)
+                            .orElseThrow(() -> new WalletNotFoundException(walletId))
+                            .getAmount();
+
                     // if lock expired - abort transaction, because lock guarantees weren't enforced
                     lock.check();
-                    return result;
+                    return new MovementResult(result.entry(), walletAmount, result.replayed());
                 });
                 Objects.requireNonNull(movement, "this can't happen, txTemplate.execute won't return null");
                 if (movement.replayed()) {
@@ -99,7 +107,7 @@ public class WalletService {
                 } else {
                     LOGGER.info("movement applied: tx={} wallet={} amount={}", transactionId, walletId, amount);
                 }
-                return movement.entry();
+                return new WalletMovement(movement.entry(), movement.walletAmount());
             } catch (InsufficientFundsException e) {
                 LOGGER.warn("transaction rejected, insufficient funds: tx={} wallet={} amount={}",
                         transactionId, walletId, amount);
@@ -124,22 +132,22 @@ public class WalletService {
      * - store WalletTransaction
      * - store wallet outbox event
      */
-    private MovementResult executeMovement(UUID transactionId, UUID walletId, long amount) {
+    private MovementExecution executeMovement(UUID transactionId, UUID walletId, long amount) {
         var existing = transactionRepository.findById(transactionId);
         if (existing.isPresent()) {
-            return new MovementResult(validateWalletLedger(existing.get(), walletId, amount), true);
+            return new MovementExecution(validateWalletLedger(existing.get(), walletId, amount), true);
         }
         if (strictIdempotency) {
             var failed = failedTransactionRepository.findById(transactionId);
             if (failed.isPresent()) {
-                throw replayFailedTransaction(failed.get(), walletId, amount);
+                throw getTransactionError(failed.get(), walletId, amount);
             }
         }
 
         var updated = walletRepository.updateWallet(walletId, amount);
         if (updated > 0) {
             outboxRepository.save(new WalletOutboxMessage(transactionId, walletId, amount));
-            return new MovementResult(transactionRepository.save(new WalletTransaction(transactionId, walletId, amount)), false);
+            return new MovementExecution(transactionRepository.save(new WalletTransaction(transactionId, walletId, amount)), false);
         }
         // wallet update may fail because either wallet is missing or amount became negative
         // check actual reason
@@ -148,7 +156,7 @@ public class WalletService {
         }
         //  double-check transactionId - since we lock over walletId, that transactionId still may "slip" into DB
         return transactionRepository.findById(transactionId)
-                .map(stored -> new MovementResult(validateWalletLedger(stored, walletId, amount), true))
+                .map(stored -> new MovementExecution(validateWalletLedger(stored, walletId, amount), true))
                 .orElseThrow(() -> new InsufficientFundsException(walletId));
     }
 
@@ -156,7 +164,7 @@ public class WalletService {
      * Ensure specified transaction was already applied to the same wallet
      * throw IllegalTransactionException otherwise
      */
-    private WalletTransaction resolveCommittedDuplicate(
+    private WalletMovement resolveCommittedDuplicate(
             UUID transactionId,
             UUID walletId,
             long amount,
@@ -166,8 +174,11 @@ public class WalletService {
             throw original;
         }
         var entry = validateWalletLedger(stored, walletId, amount);
+        var walletAmount = walletRepository.findById(walletId)
+                .orElseThrow(() -> new WalletNotFoundException(walletId))
+                .getAmount();
         LOGGER.debug("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
-        return entry;
+        return new WalletMovement(entry, walletAmount);
     }
 
     /**
@@ -175,11 +186,9 @@ public class WalletService {
      */
     private static WalletTransaction validateWalletLedger(WalletTransaction stored, UUID walletId, long amount) {
         if (!stored.getWalletId().equals(walletId) || stored.getAmount() != amount) {
-            UUID transactionId = stored.getTransactionId();
-            var message = "transaction_id %s already used for wallet %s (amount %d), conflicting with wallet %s (amount %d)"
-                    .formatted(transactionId, stored.getWalletId(), stored.getAmount(), walletId, amount);
-            LOGGER.warn("transaction id conflict: {}", message);
-            throw new IllegalTransactionException(message);
+            LOGGER.warn("transaction id conflict: tx={} storedWallet={} storedAmount={} requestedWallet={} requestedAmount={}",
+                    stored.getTransactionId(), stored.getWalletId(), stored.getAmount(), walletId, amount);
+            throw IllegalTransactionException.transactionAlreadyUsed(stored.getTransactionId());
         }
         return stored;
     }
@@ -187,12 +196,12 @@ public class WalletService {
     /**
      * Strict idempotency: a duplicate of a failed movement replays the recorded error
      */
-    private static RuntimeException replayFailedTransaction(WalletFailedTransaction stored, UUID walletId, long amount) {
+    private static RuntimeException getTransactionError(WalletFailedTransaction stored, UUID walletId, long amount) {
+        // wallet_id and amount must much previous transaction, otherwise - report error
         if (!stored.getWalletId().equals(walletId) || stored.getAmount() != amount) {
-            var message = "transaction_id %s failed for wallet %s (amount %d), conflicting with wallet %s (amount %d)"
-                    .formatted(stored.getTransactionId(), stored.getWalletId(), stored.getAmount(), walletId, amount);
-            LOGGER.warn("transaction id conflict: {}", message);
-            throw new IllegalTransactionException(message);
+            LOGGER.warn("transaction id conflict: tx={} storedFailedWallet={} storedFailedAmount={} requestedWallet={} requestedAmount={}",
+                    stored.getTransactionId(), stored.getWalletId(), stored.getAmount(), walletId, amount);
+            throw IllegalTransactionException.transactionAlreadyUsed(stored.getTransactionId());
         }
         return switch (stored.getError()) {
             case INSUFFICIENT_FUNDS -> new InsufficientFundsException(walletId);
@@ -222,6 +231,18 @@ public class WalletService {
     /**
      * Movement outcome: stored entry plus whether it was newly applied or replayed for a duplicate request.
      */
-    private record MovementResult(WalletTransaction entry, boolean replayed) {
+    private record MovementExecution(WalletTransaction entry, boolean replayed) {
+    }
+
+    /**
+     * Movement execution plus the wallet amount read after it, inside the movement transaction.
+     */
+    private record MovementResult(WalletTransaction entry, long walletAmount, boolean replayed) {
+    }
+
+    /**
+     * Movement result reported to callers: the stored transaction and the wallet balance after it.
+     */
+    public record WalletMovement(WalletTransaction entry, long walletAmount) {
     }
 }

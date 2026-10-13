@@ -3,12 +3,10 @@ package com.github.walletengine;
 import com.github.walletengine.publisher.WalletAmqpConfiguration;
 import com.github.walletengine.publisher.WalletUpdatedEvent;
 import com.github.walletengine.wallet.WalletService;
-import com.github.walletengine.wallet.WalletTransaction;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -44,11 +42,11 @@ public final class TestFixture {
         return transactionIds;
     }
 
-    public static WalletTransaction perform(
+    public static WalletService.WalletMovement perform(
             WalletService walletService,
             String operation,
             UUID transactionId, UUID walletId, long amount) {
-        return switch (normalized(operation)) {
+        return switch (operation) {
             case "debit" -> walletService.debit(transactionId, walletId, amount);
             case "credit" -> walletService.credit(transactionId, walletId, amount);
             default -> throw new IllegalArgumentException("unknown operation: " + operation);
@@ -56,15 +54,11 @@ public final class TestFixture {
     }
 
     public static long signedAmount(String operation, long amount) {
-        return switch (normalized(operation)) {
+        return switch (operation) {
             case "debit" -> -amount;
             case "credit" -> amount;
             default -> throw new IllegalArgumentException("unknown operation: " + operation);
         };
-    }
-
-    private static String normalized(String operation) {
-        return operation.strip().toLowerCase(Locale.ROOT);
     }
 
     public static List<WalletUpdatedEvent> drainEvents(RabbitTemplate rabbitTemplate) {

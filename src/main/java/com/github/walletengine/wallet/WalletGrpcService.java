@@ -27,8 +27,8 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
         var walletId = parseUuid(request.getWalletId(), "wallet_id");
         var amount = requirePositiveAmount(request.getAmount(), "debit");
 
-        var entry = walletService.debit(transactionId, walletId, amount);
-        var response = toTransactionResponse(entry);
+        var movement = walletService.debit(transactionId, walletId, amount);
+        var response = toTransactionResponse(movement);
 
         observer.onNext(response);
         observer.onCompleted();
@@ -40,8 +40,8 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
         var walletId = parseUuid(request.getWalletId(), "wallet_id");
         var amount = requirePositiveAmount(request.getAmount(), "credit");
 
-        var entry = walletService.credit(transactionId, walletId, amount);
-        var response = toTransactionResponse(entry);
+        var movement = walletService.credit(transactionId, walletId, amount);
+        var response = toTransactionResponse(movement);
 
         observer.onNext(response);
         observer.onCompleted();
@@ -89,12 +89,13 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
         return amount;
     }
 
-    private static TransactionResponse toTransactionResponse(WalletTransaction entry) {
+    private static TransactionResponse toTransactionResponse(WalletService.WalletMovement movement) {
         return TransactionResponse.newBuilder()
-                .setTransactionId(entry.getTransactionId().toString())
-                .setWalletId(entry.getWalletId().toString())
-                .setAmount(entry.getAmount())
-                .setUpdatedAt(toTimestamp(entry.getUpdatedAt()))
+                .setTransactionId(movement.entry().getTransactionId().toString())
+                .setWalletId(movement.entry().getWalletId().toString())
+                .setAmount(movement.walletAmount())
+                .setTransactionAmount(movement.entry().getAmount())
+                .setUpdatedAt(toTimestamp(movement.entry().getUpdatedAt()))
                 .build();
     }
 

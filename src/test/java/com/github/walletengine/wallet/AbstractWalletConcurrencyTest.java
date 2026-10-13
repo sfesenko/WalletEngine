@@ -136,13 +136,13 @@ abstract class AbstractWalletConcurrencyTest {
 
         var expected = new HashMap<UUID, Long>();
         var seenTx = new HashSet<UUID>();
-        var byWallet = new HashMap<UUID, List<WalletMovement>>();
+        var byWallet = new HashMap<UUID, List<PlannedMovement>>();
         for (var row : rows) {
             var walletId = walletIds.get(row.wallet());
             var transactionId = txIds.get(row.transaction());
 
             byWallet.computeIfAbsent(walletId, k -> new ArrayList<>())
-                    .add(new WalletMovement(row.operation(), transactionId, row.amount()));
+                    .add(new PlannedMovement(row.operation(), transactionId, row.amount()));
 
             if (seenTx.add(transactionId)) {
                 expected.merge(walletId, TestFixture.signedAmount(row.operation(), row.amount()), Long::sum);
@@ -254,7 +254,7 @@ abstract class AbstractWalletConcurrencyTest {
                 var slice = ops.subList(s * sliceSize,
                         s == SLICES_PER_WALLET - 1 ? ops.size() : (s + 1) * sliceSize);
                 var movements = slice.stream()
-                        .map(op -> new WalletMovement(op.operation(), txIds.get(op.txKey()), op.amount()))
+                        .map(op -> new PlannedMovement(op.operation(), txIds.get(op.txKey()), op.amount()))
                         .toList();
                 tasks.add(() -> {
                     for (var movement : movements) {
@@ -359,7 +359,7 @@ abstract class AbstractWalletConcurrencyTest {
 
             var start = new CyclicBarrier(2);
             try (var executor = Executors.newFixedThreadPool(2)) {
-                var tasks = new ArrayList<Callable<WalletTransaction>>(2);
+                var tasks = new ArrayList<Callable<WalletService.WalletMovement>>(2);
                 for (var t = 0; t < 2; t++) {
                     tasks.add(() -> {
                         start.await();
@@ -371,10 +371,10 @@ abstract class AbstractWalletConcurrencyTest {
                 var first = futures.getFirst().get(10, TimeUnit.SECONDS);
                 var second = futures.getLast().get(10, TimeUnit.SECONDS);
 
-                assertThat(first.getTransactionId()).isEqualTo(transactionId);
+                assertThat(first.entry().getTransactionId()).isEqualTo(transactionId);
                 assertThat(second).usingRecursiveComparison()
                         // updated_at: Hibernate sets it in-memory, Postgres stores microseconds
-                        .ignoringFields("updatedAt")
+                        .ignoringFields("entry.updatedAt")
                         .isEqualTo(first);
                 assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(500L);
             }
@@ -391,7 +391,7 @@ abstract class AbstractWalletConcurrencyTest {
         walletService.createWallet(secondWalletId);
 
         var start = new CyclicBarrier(2);
-        var tasks = new ArrayList<Callable<WalletTransaction>>(2);
+        var tasks = new ArrayList<Callable<WalletService.WalletMovement>>(2);
         tasks.add(() -> {
             start.await();
             return walletService.credit(transactionId, firstWalletId, 500L);
@@ -427,13 +427,12 @@ abstract class AbstractWalletConcurrencyTest {
     @Tag("slow")
     @ParameterizedTest
     @CsvSource(value = {
-            "0    | 500   | credit | 500  | 500   | null                          | 500",
-            "1000 | -1000 | debit  | 1000 | -1000 | null                          | 0  ",
-            "1000 | -1000 | debit  | 600  | null  | IllegalTransactionException   | 0  ",
-    }, delimiter = '|', nullValues = "null")
-    void duplicateRaceBehindCommittedWinnerReturnsExpectedOutcome(
-            long funded, long winnerAmount, String callKind, long callAmount,
-            Long expectedStored, String exception, long expectedBalance) throws Exception {
+            "0    | 500   | credit | 500  | 500   | 500",
+            "1000 | -1000 | debit  | 1000 | -1000 | 0  ",
+    }, delimiter = '|')
+    void duplicateRaceBehindCommittedWinnerReplaysStoredMovement(
+            long funded, long winnerAmount, String operation, long callAmount,
+            long expectedStored, long expectedBalance) throws Exception {
         var walletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
         walletService.createWallet(walletId);
@@ -441,24 +440,32 @@ abstract class AbstractWalletConcurrencyTest {
             walletService.credit(UUID.randomUUID(), walletId, funded);
         }
 
-        Callable<WalletTransaction> serviceCall = switch (callKind.strip()) {
-            case "credit" -> () -> walletService.credit(transactionId, walletId, callAmount);
-            case "debit" -> () -> walletService.debit(transactionId, walletId, callAmount);
-            default -> throw new IllegalArgumentException("unknown call: " + callKind);
-        };
+        var outcome = raceBehindUncommittedWinner(transactionId, walletId, winnerAmount,
+                () -> TestFixture.perform(walletService, operation, transactionId, walletId, callAmount));
 
-        var outcome = raceBehindUncommittedWinner(transactionId, walletId, winnerAmount, serviceCall);
-
-        if (exception == null) {
-            assertThat(outcome.failure()).isNull();
-            assertThat(outcome.value()).isNotNull();
-            assertThat(outcome.value().getTransactionId()).isEqualTo(transactionId);
-            assertThat(outcome.value().getAmount()).isEqualTo(expectedStored);
-        } else {
-            assertThat(outcome.value()).isNull();
-            assertThat(outcome.failure()).isInstanceOf(IllegalTransactionException.class);
-        }
+        assertThat(outcome.failure()).isNull();
+        assertThat(outcome.value()).isNotNull();
+        assertThat(outcome.value().entry().getTransactionId()).isEqualTo(transactionId);
+        assertThat(outcome.value().entry().getAmount()).isEqualTo(expectedStored);
         assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(expectedBalance);
+    }
+
+    @Tag("slow")
+    @Test
+    void duplicateRaceBehindCommittedWinnerRejectsConflictingMovement() throws Exception {
+        var walletId = UUID.randomUUID();
+        var transactionId = UUID.randomUUID();
+        walletService.createWallet(walletId);
+        walletService.credit(UUID.randomUUID(), walletId, 1_000L);
+
+        var outcome = raceBehindUncommittedWinner(transactionId, walletId, -1_000L,
+                () -> walletService.debit(transactionId, walletId, 600L));
+
+        assertThat(outcome.value()).isNull();
+        assertThat(outcome.failure())
+                .isInstanceOf(IllegalTransactionException.class)
+                .hasMessage("transaction_id %s is already used".formatted(transactionId));
+        assertThat(walletService.getWalletById(walletId).getAmount()).isZero();
     }
 
     private static Map<String, List<StressOp>> stressOps() {
@@ -486,7 +493,7 @@ abstract class AbstractWalletConcurrencyTest {
         return ledgerByWallet.values().stream().anyMatch(byTx -> byTx.containsKey(transactionId));
     }
 
-    private record RaceOutcome(WalletTransaction value, RuntimeException failure) {
+    private record RaceOutcome(WalletService.WalletMovement value, RuntimeException failure) {
     }
 
     private record RejectedRow(UUID walletId, long amount, String errorCode) {
@@ -494,7 +501,7 @@ abstract class AbstractWalletConcurrencyTest {
 
     /** Winner commits only after the service call is blocked on the wallet row. */
     private RaceOutcome raceBehindUncommittedWinner(UUID transactionId, UUID walletId, long winnerAmount,
-            Callable<WalletTransaction> serviceCall) throws Exception {
+            Callable<WalletService.WalletMovement> serviceCall) throws Exception {
         var sideReady = new CountDownLatch(1);
         var releaseSide = new CountDownLatch(1);
         var sideFailure = new AtomicReference<Throwable>();
@@ -523,7 +530,7 @@ abstract class AbstractWalletConcurrencyTest {
             awaitLatch(sideReady, 10_000);
 
             var serviceFailure = new AtomicReference<Throwable>();
-            var serviceValue = new AtomicReference<WalletTransaction>();
+            var serviceValue = new AtomicReference<WalletService.WalletMovement>();
             var service = new Thread(() -> {
                 try {
                     serviceValue.set(serviceCall.call());
@@ -628,7 +635,7 @@ abstract class AbstractWalletConcurrencyTest {
         }
     }
 
-    private void applyWithLockRetry(WalletMovement movement, UUID walletId, AtomicInteger insufficient) {
+    private void applyWithLockRetry(PlannedMovement movement, UUID walletId, AtomicInteger insufficient) {
         for (var attempt = 0; ; attempt++) {
             try {
                 TestFixture.perform(walletService, movement.operation(), movement.transactionId(), walletId, movement.amount());
@@ -672,6 +679,6 @@ abstract class AbstractWalletConcurrencyTest {
     private record StressOp(String operation, String txKey, long amount) {
     }
 
-    private record WalletMovement(String operation, UUID transactionId, long amount) {
+    private record PlannedMovement(String operation, UUID transactionId, long amount) {
     }
 }

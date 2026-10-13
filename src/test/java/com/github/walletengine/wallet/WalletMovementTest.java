@@ -7,13 +7,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.UUID;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.*;
 
 /**
  * Checks wallet lifecycle and movements.
@@ -51,11 +49,12 @@ class WalletMovementTest {
             walletService.credit(fundingId, walletId, funded);
         }
 
-        var entry = TestFixture.perform(walletService, operation, transactionId, walletId, amount);
+        var movement = TestFixture.perform(walletService, operation, transactionId, walletId, amount);
 
-        assertThat(entry.getTransactionId()).isEqualTo(transactionId);
-        assertThat(entry.getWalletId()).isEqualTo(walletId);
-        assertThat(entry.getAmount()).isEqualTo(expectedStored);
+        assertThat(movement.entry().getTransactionId()).isEqualTo(transactionId);
+        assertThat(movement.entry().getWalletId()).isEqualTo(walletId);
+        assertThat(movement.entry().getAmount()).isEqualTo(expectedStored);
+        assertThat(movement.walletAmount()).isEqualTo(expectedBalance);
 
         var wallet = walletService.getWalletById(walletId);
 
@@ -69,60 +68,60 @@ class WalletMovementTest {
 
     @ParameterizedTest
     @CsvSource(value = {
-            "debit  | true  | 100 | InsufficientFundsException       ",
-            "debit  | true  | 0   | DataIntegrityViolationException  ",
-            "credit | true  | 0   | DataIntegrityViolationException  ",
-            "debit  | false | 100 | WalletNotFoundException          ",
+            "debit  | 100 | com.github.walletengine.wallet.InsufficientFundsException",
+            "debit  | 0   | org.springframework.dao.DataIntegrityViolationException",
+            "credit | 0   | org.springframework.dao.DataIntegrityViolationException",
     }, delimiter = '|')
-    void movementErrorIsRejected(String operation, boolean createWallet, long amount, String exception) {
+    void movementErrorIsRejected(String operation, long amount, Class<? extends Exception> expected) {
         var walletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
-
-        if (createWallet) {
-            walletService.createWallet(walletId);
-        }
-
-        var expected = switch (exception.strip()) {
-            case "InsufficientFundsException" -> InsufficientFundsException.class;
-            case "DataIntegrityViolationException" -> DataIntegrityViolationException.class;
-            case "WalletNotFoundException" -> WalletNotFoundException.class;
-            default -> throw new IllegalArgumentException("unknown exception: " + exception);
-        };
+        walletService.createWallet(walletId);
 
         assertThatThrownBy(() -> TestFixture.perform(walletService, operation, transactionId, walletId, amount))
                 .isInstanceOf(expected);
 
         assertThat(ledgerRepository.findById(transactionId)).isEmpty();
         assertThat(outboxRepository.findById(transactionId)).isEmpty();
+        assertThat(walletService.getWalletById(walletId).getAmount()).isZero();
+    }
 
-        if (createWallet) {
-            assertThat(walletService.getWalletById(walletId).getAmount()).isZero();
-        }
+    @Test
+    void movementOnMissingWalletIsRejected() {
+        var walletId = UUID.randomUUID();
+        var transactionId = UUID.randomUUID();
+
+        assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 100L))
+                .isInstanceOf(WalletNotFoundException.class);
+
+        assertThat(ledgerRepository.findById(transactionId)).isEmpty();
+        assertThat(outboxRepository.findById(transactionId)).isEmpty();
     }
 
     @ParameterizedTest
     @CsvSource(value = {
-            "otherWallet     | 500 | 500",
-            "differentAmount | 500 | 600",
+            "otherWallet     | 500",
+            "differentAmount | 600",
     }, delimiter = '|')
-    void replayingTransactionWithConflictThrows(String conflict, long firstAmount, long secondAmount) {
+    void replayingTransactionWithConflictThrows(String conflict, long secondAmount) {
         var walletId = UUID.randomUUID();
         var otherWalletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
 
         walletService.createWallet(walletId);
         walletService.createWallet(otherWalletId);
-        walletService.credit(transactionId, walletId, firstAmount);
+        walletService.credit(transactionId, walletId, 500L);
 
-        var conflictingWallet = conflict.strip().equals("otherWallet") ? otherWalletId : walletId;
+        var conflictingWallet = conflict.equals("otherWallet") ? otherWalletId : walletId;
 
-        assertThatThrownBy(() -> walletService.credit(transactionId, conflictingWallet, secondAmount))
-                .isInstanceOf(IllegalTransactionException.class);
+        var failure = catchThrowable(() -> walletService.credit(transactionId, conflictingWallet, secondAmount));
 
-        assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(firstAmount);
-        if (conflictingWallet.equals(otherWalletId)) {
-            assertThat(walletService.getWalletById(otherWalletId).getAmount()).isZero();
-        }
+        assertThat(failure).isInstanceOf(IllegalTransactionException.class);
+        assertThat(failure.getMessage())
+                .contains(transactionId.toString())
+                .doesNotContain(walletId.toString(), otherWalletId.toString());
+
+        assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(500L);
+        assertThat(walletService.getWalletById(otherWalletId).getAmount()).isZero();
     }
 
     @Test
@@ -135,8 +134,10 @@ class WalletMovementTest {
         var first = walletService.credit(transactionId, walletId, 500L);
         var second = walletService.credit(transactionId, walletId, 500L);
 
-        assertThat(second.getTransactionId()).isEqualTo(first.getTransactionId());
-        assertThat(second.getAmount()).isEqualTo(first.getAmount());
+        assertThat(second.entry().getTransactionId()).isEqualTo(first.entry().getTransactionId());
+        assertThat(second.entry().getAmount()).isEqualTo(first.entry().getAmount());
+        assertThat(first.walletAmount()).isEqualTo(500L);
+        assertThat(second.walletAmount()).isEqualTo(500L);
 
         var wallet = walletService.getWalletById(walletId);
 
