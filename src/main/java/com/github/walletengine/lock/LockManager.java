@@ -7,7 +7,6 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.util.UUID;
 
-
 /**
  * Distributed LockManager that utilize single redis instance.
  * As improvement - it may be enhanced to implement <a href="https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/#the-redlock-algorithm">RedLock</a>
