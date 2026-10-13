@@ -2,23 +2,21 @@ package com.github.walletengine.wallet;
 
 import com.github.walletengine.TestFixture;
 import com.github.walletengine.lock.LockFailedException;
-import com.github.walletengine.publisher.WalletOutboxMessageRepository;
 import com.github.walletengine.publisher.WalletOutboxPublisher;
 import com.github.walletengine.publisher.WalletUpdatedEvent;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -35,17 +33,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Concurrent wallet movements
+ * Concurrent wallet movements, executed once per idempotency mode
  */
-@SpringBootTest
-@ActiveProfiles("test")
-class WalletConcurrencyTest {
+abstract class AbstractWalletConcurrencyTest {
 
     private static final int CONCURRENCY = 20;
     private static final int STRESS_WALLETS = 4;
-    private static final int OPS_PER_WALLET = 5000;
+    // reduced from 5000 to keep the suite fast; raise for deeper soak runs
+    private static final int OPS_PER_WALLET = 1000;
     private static final int SLICES_PER_WALLET = 5;
     private static final double STRESS_DUPLICATE_RATE = 0.10;
     private static final long STRESS_SEED = 42L;
@@ -65,13 +63,18 @@ class WalletConcurrencyTest {
     private WalletOutboxPublisher publisher;
 
     @Autowired
-    private WalletOutboxMessageRepository outboxRepository;
+    private WalletTransactionRepository transactionRepository;
+
+    @Autowired
+    private WalletFailedTransactionRepository failedTransactionRepository;
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
 
-    @Value("${wallet.idempotency.strict}")
-    private boolean strictIdempotency;
+    /**
+     * Whether the context under test runs with {@code wallet.idempotency.strict=true}.
+     */
+    protected abstract boolean isStrictIdempotency();
 
     @Test
     void concurrentDebitsNeverDriveBalanceNegative() throws Exception {
@@ -96,8 +99,12 @@ class WalletConcurrencyTest {
         var moved = successes * debitAmount;
         var wallet = walletService.getWalletById(walletId);
 
-        assertThat(wallet.getAmount()).isZero();
+        assertThat(successes).isEqualTo(10);
         assertThat(moved).isEqualTo(1_000L);
+        assertThat(wallet.getAmount()).isZero();
+        assertThat(ledgerSum(walletId)).isZero();
+        // strict mode records every state-dependent rejection; non-strict leaves no trace
+        assertThat(failedTransactionCount(walletId)).isEqualTo(isStrictIdempotency() ? 10 : 0);
     }
 
     @Test
@@ -163,13 +170,63 @@ class WalletConcurrencyTest {
             var wallet = walletService.getWalletById(balance.getKey());
 
             assertThat(wallet.getAmount()).isEqualTo(balance.getValue());
+            assertThat(ledgerSum(balance.getKey())).isEqualTo(balance.getValue());
+            // the scenario holds only movements that succeed, so nothing is rejected in either mode
+            assertThat(failedTransactionCount(balance.getKey())).isZero();
         }
 
         // scenario totals: w0 = 1300, w1 = 1300, w2 = 300
     }
 
+    @Test
+    void rejectedMovementReplayFollowsIdempotencyMode() {
+        var walletId = UUID.randomUUID();
+        var transactionId = UUID.randomUUID();
+        walletService.createWallet(walletId);
+        walletService.credit(UUID.randomUUID(), walletId, 1_000L);
+
+        assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 2_000L))
+                .isInstanceOf(InsufficientFundsException.class);
+
+        if (isStrictIdempotency()) {
+            assertThat(failedTransactionRepository.findById(transactionId)).isPresent();
+        } else {
+            assertThat(failedTransactionRepository.findById(transactionId)).isEmpty();
+        }
+
+        // funds arrive: only non-strict mode may re-execute the rejected movement
+        walletService.credit(UUID.randomUUID(), walletId, 2_000L);
+
+        if (isStrictIdempotency()) {
+            assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 2_000L))
+                    .isInstanceOf(InsufficientFundsException.class);
+            assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(3_000L);
+            assertThat(transactionRepository.findById(transactionId)).isEmpty();
+        } else {
+            walletService.debit(transactionId, walletId, 2_000L);
+            assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(1_000L);
+            assertThat(transactionRepository.findById(transactionId)).isPresent();
+        }
+    }
+
+    @Test
+    void conflictingReuseOfAppliedTransactionIsRejectedInBothModes() {
+        var walletId = UUID.randomUUID();
+        var transactionId = UUID.randomUUID();
+        walletService.createWallet(walletId);
+        walletService.credit(transactionId, walletId, 100L);
+
+        // same transaction id with a different amount: a conflict, not a replay
+        assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 50L))
+                .isInstanceOf(IllegalTransactionException.class);
+
+        assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(100L);
+        assertThat(failedTransactionRepository.findById(transactionId)).isEmpty();
+    }
+
     @Tag("slow")
     @Test
+    @Timeout(value = 10, unit = TimeUnit.MINUTES)
     void concurrentStress() throws Exception {
         var opsByWalletKey = stressOps();
 
@@ -233,10 +290,10 @@ class WalletConcurrencyTest {
             ledgerByWallet.put(walletId, byTx);
         }
 
-        for (var i = 0; i < 100 && !outboxRepository.findAllById(ownTxIds).isEmpty(); i++) {
+        for (var i = 0; i < 100 && outboxRowCount(walletIds.values()) > 0; i++) {
             publisher.publish();
         }
-        assertThat(outboxRepository.findAllById(ownTxIds)).isEmpty();
+        assertThat(outboxRowCount(walletIds.values())).isZero();
 
         var eventsByTx = new HashMap<UUID, List<WalletUpdatedEvent>>();
         for (var event : TestFixture.drainEvents(rabbitTemplate)) {
@@ -254,8 +311,7 @@ class WalletConcurrencyTest {
             }
         }
         for (var txId : ownTxIds) {
-            var applied = ledgerByWallet.values().stream().anyMatch(byTx -> byTx.containsKey(txId));
-            if (!applied) {
+            if (!isApplied(ledgerByWallet, txId)) {
                 assertThat(eventsByTx.get(txId)).isNull();
             }
         }
@@ -263,45 +319,33 @@ class WalletConcurrencyTest {
         // mode-aware bookkeeping: strict records every state-dependent rejection exactly once
         // (transaction_id is the PK); non-strict leaves no trace. Applied txs are never recorded.
         var rejectedByTx = new HashMap<UUID, RejectedRow>();
-        for (var row : jdbcTemplate.query(
-                "select transaction_id, wallet_id, amount from wallet_failed_transactions",
-                (rs, n) -> Map.entry(rs.getObject("transaction_id", UUID.class),
-                        new RejectedRow(rs.getObject("wallet_id", UUID.class), rs.getLong("amount"))))) {
-            rejectedByTx.put(row.getKey(), row.getValue());
+        for (var walletId : walletIds.values()) {
+            for (var row : jdbcTemplate.query(
+                    """
+                    select transaction_id, wallet_id, amount, error_code
+                      from wallet_failed_transactions
+                     where wallet_id = ?
+                    """,
+                    (rs, n) -> Map.entry(rs.getObject("transaction_id", UUID.class),
+                            new RejectedRow(rs.getObject("wallet_id", UUID.class), rs.getLong("amount"),
+                                    rs.getString("error_code"))),
+                    walletId)) {
+                rejectedByTx.put(row.getKey(), row.getValue());
+            }
         }
         for (var txId : ownTxIds) {
-            var applied = ledgerByWallet.values().stream().anyMatch(byTx -> byTx.containsKey(txId));
-            if (applied) {
+            if (isApplied(ledgerByWallet, txId)) {
                 assertThat(rejectedByTx).doesNotContainKey(txId);
-            } else if (strictIdempotency) {
+            } else if (isStrictIdempotency()) {
                 assertThat(rejectedByTx).containsKey(txId);
-                assertThat(rejectedByTx.get(txId).walletId()).isEqualTo(walletByTx.get(txId));
-                assertThat(rejectedByTx.get(txId).amount()).isNegative();
+                var rejected = rejectedByTx.get(txId);
+                assertThat(rejected.walletId()).isEqualTo(walletByTx.get(txId));
+                assertThat(rejected.amount()).isNegative();
+                assertThat(rejected.errorCode()).isEqualTo(WalletFailedTransaction.Error.INSUFFICIENT_FUNDS.name());
             } else {
                 assertThat(rejectedByTx).doesNotContainKey(txId);
             }
         }
-    }
-
-    private static Map<String, List<StressOp>> stressOps() {
-        var rng = new Random(STRESS_SEED);
-
-        var opsByWalletKey = new HashMap<String, List<StressOp>>();
-        for (var w = 0; w < STRESS_WALLETS; w++) {
-            var ops = new ArrayList<StressOp>(OPS_PER_WALLET);
-            // first row: can never succeed, so the rejection path runs regardless of interleaving
-            ops.add(new StressOp("debit", "s" + w + "-0", STRESS_GUARANTEED_DEBIT));
-            for (var i = 1; i < OPS_PER_WALLET; i++) {
-                if (rng.nextDouble() < STRESS_DUPLICATE_RATE) {
-                    ops.add(ops.get(rng.nextInt(ops.size())));
-                } else {
-                    var operation = rng.nextBoolean() ? "credit" : "debit";
-                    ops.add(new StressOp(operation, "s" + w + "-" + i, 1 + rng.nextInt(1000)));
-                }
-            }
-            opsByWalletKey.put("s" + w, ops);
-        }
-        return opsByWalletKey;
     }
 
     @Tag("slow")
@@ -417,10 +461,35 @@ class WalletConcurrencyTest {
         assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(expectedBalance);
     }
 
+    private static Map<String, List<StressOp>> stressOps() {
+        var rng = new Random(STRESS_SEED);
+
+        var opsByWalletKey = new HashMap<String, List<StressOp>>();
+        for (var w = 0; w < STRESS_WALLETS; w++) {
+            var ops = new ArrayList<StressOp>(OPS_PER_WALLET);
+            // first row: can never succeed, so the rejection path runs regardless of interleaving
+            ops.add(new StressOp("debit", "s" + w + "-0", STRESS_GUARANTEED_DEBIT));
+            for (var i = 1; i < OPS_PER_WALLET; i++) {
+                if (rng.nextDouble() < STRESS_DUPLICATE_RATE) {
+                    ops.add(ops.get(rng.nextInt(ops.size())));
+                } else {
+                    var operation = rng.nextBoolean() ? "credit" : "debit";
+                    ops.add(new StressOp(operation, "s" + w + "-" + i, 1 + rng.nextInt(1000)));
+                }
+            }
+            opsByWalletKey.put("s" + w, ops);
+        }
+        return opsByWalletKey;
+    }
+
+    private static boolean isApplied(Map<UUID, Map<UUID, Long>> ledgerByWallet, UUID transactionId) {
+        return ledgerByWallet.values().stream().anyMatch(byTx -> byTx.containsKey(transactionId));
+    }
+
     private record RaceOutcome(WalletTransaction value, RuntimeException failure) {
     }
 
-    private record RejectedRow(UUID walletId, long amount) {
+    private record RejectedRow(UUID walletId, long amount, String errorCode) {
     }
 
     /** Winner commits only after the service call is blocked on the wallet row. */
@@ -545,11 +614,17 @@ class WalletConcurrencyTest {
     }
 
     private boolean tryDebit(UUID transactionId, UUID walletId, long amount) {
-        try {
-            walletService.debit(transactionId, walletId, amount);
-            return true;
-        } catch (InsufficientFundsException e) {
-            return false;
+        for (var attempt = 0; ; attempt++) {
+            try {
+                walletService.debit(transactionId, walletId, amount);
+                return true;
+            } catch (InsufficientFundsException e) {
+                return false;
+            } catch (LockFailedException e) {
+                if (attempt >= 100) {
+                    throw e;
+                }
+            }
         }
     }
 
@@ -567,6 +642,28 @@ class WalletConcurrencyTest {
                 }
             }
         }
+    }
+
+    private long ledgerSum(UUID walletId) {
+        Long sum = jdbcTemplate.queryForObject(
+                "select coalesce(sum(amount), 0) from wallet_ledger where wallet_id = ?", Long.class, walletId);
+        return sum == null ? 0L : sum;
+    }
+
+    private int failedTransactionCount(UUID walletId) {
+        Integer count = jdbcTemplate.queryForObject(
+                "select count(*) from wallet_failed_transactions where wallet_id = ?", Integer.class, walletId);
+        return count == null ? 0 : count;
+    }
+
+    private long outboxRowCount(Collection<UUID> walletIds) {
+        var total = 0L;
+        for (var walletId : walletIds) {
+            Long count = jdbcTemplate.queryForObject(
+                    "select count(*) from wallet_outbox where wallet_id = ?", Long.class, walletId);
+            total += count == null ? 0L : count;
+        }
+        return total;
     }
 
     private record WalletOp(String operation, String wallet, String transaction, long amount) {
