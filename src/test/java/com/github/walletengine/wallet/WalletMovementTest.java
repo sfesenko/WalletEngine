@@ -69,21 +69,17 @@ class WalletMovementTest {
 
     @ParameterizedTest
     @CsvSource(value = {
-            "debit  | true  | 0 | 100 | InsufficientFundsException       ",
-            "debit  | true  | 0 | 0   | DataIntegrityViolationException  ",
-            "credit | true  | 0 | 0   | DataIntegrityViolationException  ",
-            "debit  | false | 0 | 100 | WalletNotFoundException          ",
+            "debit  | true  | 100 | InsufficientFundsException       ",
+            "debit  | true  | 0   | DataIntegrityViolationException  ",
+            "credit | true  | 0   | DataIntegrityViolationException  ",
+            "debit  | false | 100 | WalletNotFoundException          ",
     }, delimiter = '|')
-    void movementErrorIsRejected(String operation, boolean createWallet, long funded, long amount,
-            String exception) {
+    void movementErrorIsRejected(String operation, boolean createWallet, long amount, String exception) {
         var walletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
 
         if (createWallet) {
             walletService.createWallet(walletId);
-            if (funded > 0) {
-                walletService.credit(UUID.randomUUID(), walletId, funded);
-            }
         }
 
         var expected = switch (exception.strip()) {
@@ -100,7 +96,7 @@ class WalletMovementTest {
         assertThat(outboxRepository.findById(transactionId)).isEmpty();
 
         if (createWallet) {
-            assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(funded);
+            assertThat(walletService.getWalletById(walletId).getAmount()).isZero();
         }
     }
 
@@ -170,27 +166,23 @@ class WalletMovementTest {
                 .isInstanceOf(WalletNotFoundException.class);
     }
 
-    @ParameterizedTest
-    @CsvSource(value = {
-            "fresh     | false | null                         ",
-            "duplicate | true  | WalletAlreadyExistsException ",
-    }, delimiter = '|', nullValues = "null")
-    void createWalletLifecycle(String scenario, boolean preCreate, String exception) {
+    @Test
+    void createWalletCreatesZeroBalanceWallet() {
         var walletId = UUID.randomUUID();
 
-        if (preCreate) {
-            walletService.createWallet(walletId);
-        }
+        var wallet = walletService.createWallet(walletId);
 
-        if (exception == null || exception.isBlank()) {
-            var wallet = walletService.createWallet(walletId);
+        assertThat(wallet.getWalletId()).isEqualTo(walletId);
+        assertThat(wallet.getAmount()).isZero();
+        assertThat(wallet.getUpdatedAt()).isNotNull();
+    }
 
-            assertThat(wallet.getWalletId()).isEqualTo(walletId);
-            assertThat(wallet.getAmount()).isZero();
-            assertThat(wallet.getUpdatedAt()).isNotNull();
-        } else {
-            assertThatThrownBy(() -> walletService.createWallet(walletId))
-                    .isInstanceOf(WalletAlreadyExistsException.class);
-        }
+    @Test
+    void duplicateCreateWalletThrows() {
+        var walletId = UUID.randomUUID();
+        walletService.createWallet(walletId);
+
+        assertThatThrownBy(() -> walletService.createWallet(walletId))
+                .isInstanceOf(WalletAlreadyExistsException.class);
     }
 }

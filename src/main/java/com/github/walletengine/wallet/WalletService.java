@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -29,14 +30,15 @@ public class WalletService {
     private final boolean strictIdempotency;
     private final TransactionTemplate txTemplate;
 
-    public WalletService(WalletRepository walletRepository,
-                         WalletTransactionRepository transactionRepository,
-                         WalletOutboxMessageRepository outboxRepository,
-                         WalletFailedTransactionRepository failedTransactionRepository,
-                         LockManager lockManager,
-                         @Value("${wallet.lock.ttl:5s}") Duration lockTtl,
-                         @Value("${wallet.idempotency.strict:false}") boolean strictIdempotency,
-                         PlatformTransactionManager txManager) {
+    public WalletService(
+            WalletRepository walletRepository,
+            WalletTransactionRepository transactionRepository,
+            WalletOutboxMessageRepository outboxRepository,
+            WalletFailedTransactionRepository failedTransactionRepository,
+            LockManager lockManager,
+            @Value("${wallet.lock.ttl:5s}") Duration lockTtl,
+            @Value("${wallet.idempotency.strict:true}") boolean strictIdempotency,
+            PlatformTransactionManager txManager) {
         this.walletRepository = walletRepository;
         this.transactionRepository = transactionRepository;
         this.outboxRepository = outboxRepository;
@@ -84,15 +86,20 @@ public class WalletService {
     private WalletTransaction applyMovement(UUID transactionId, UUID walletId, long amount) {
         try (var lock = lockManager.acquire("wallet:" + walletId, lockTtl)) {
             try {
-                var entry = txTemplate.execute(txStatus -> {
-                    var applied = executeMovement(transactionId, walletId, amount);
+                var movement = txTemplate.execute(txStatus -> {
+                    var result = executeMovement(transactionId, walletId, amount);
 
                     // if lock expired - abort transaction, because lock guarantees weren't enforced
                     lock.check();
-                    return applied;
+                    return result;
                 });
-                LOGGER.info("movement applied: tx={} wallet={} amount={}", transactionId, walletId, amount);
-                return entry;
+                Objects.requireNonNull(movement, "this can't happen, txTemplate.execute won't return null");
+                if (movement.replayed()) {
+                    LOGGER.debug("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
+                } else {
+                    LOGGER.info("movement applied: tx={} wallet={} amount={}", transactionId, walletId, amount);
+                }
+                return movement.entry();
             } catch (InsufficientFundsException e) {
                 LOGGER.warn("transaction rejected, insufficient funds: tx={} wallet={} amount={}",
                         transactionId, walletId, amount);
@@ -117,10 +124,10 @@ public class WalletService {
      * - store WalletTransaction
      * - store wallet outbox event
      */
-    private WalletTransaction executeMovement(UUID transactionId, UUID walletId, long amount) {
+    private MovementResult executeMovement(UUID transactionId, UUID walletId, long amount) {
         var existing = transactionRepository.findById(transactionId);
         if (existing.isPresent()) {
-            return validateWalletLedger(existing.get(), walletId, amount);
+            return new MovementResult(validateWalletLedger(existing.get(), walletId, amount), true);
         }
         if (strictIdempotency) {
             var failed = failedTransactionRepository.findById(transactionId);
@@ -132,7 +139,7 @@ public class WalletService {
         var updated = walletRepository.updateWallet(walletId, amount);
         if (updated > 0) {
             outboxRepository.save(new WalletOutboxMessage(transactionId, walletId, amount));
-            return transactionRepository.save(new WalletTransaction(transactionId, walletId, amount));
+            return new MovementResult(transactionRepository.save(new WalletTransaction(transactionId, walletId, amount)), false);
         }
         // wallet update may fail because either wallet is missing or amount became negative
         // check actual reason
@@ -141,7 +148,7 @@ public class WalletService {
         }
         //  double-check transactionId - since we lock over walletId, that transactionId still may "slip" into DB
         return transactionRepository.findById(transactionId)
-                .map(stored -> validateWalletLedger(stored, walletId, amount))
+                .map(stored -> new MovementResult(validateWalletLedger(stored, walletId, amount), true))
                 .orElseThrow(() -> new InsufficientFundsException(walletId));
     }
 
@@ -158,7 +165,9 @@ public class WalletService {
         if (stored == null) {
             throw original;
         }
-        return validateWalletLedger(stored, walletId, amount);
+        var entry = validateWalletLedger(stored, walletId, amount);
+        LOGGER.debug("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
+        return entry;
     }
 
     /**
@@ -198,11 +207,21 @@ public class WalletService {
         if (!strictIdempotency) {
             return;
         }
+        if (failedTransactionRepository.existsById(transactionId)) {
+            // the failure is already recorded; duplicate requests replay the stored rejection
+            return;
+        }
         try {
             txTemplate.execute(txStatus ->
                     failedTransactionRepository.save(new WalletFailedTransaction(transactionId, walletId, amount, error)));
         } catch (DataIntegrityViolationException ignored) {
             // a racing duplicate recorded this failure first — the stored record replays instead
         }
+    }
+
+    /**
+     * Movement outcome: stored entry plus whether it was newly applied or replayed for a duplicate request.
+     */
+    private record MovementResult(WalletTransaction entry, boolean replayed) {
     }
 }

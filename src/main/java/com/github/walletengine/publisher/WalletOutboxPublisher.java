@@ -30,12 +30,12 @@ import java.util.concurrent.TimeoutException;
 public class WalletOutboxPublisher {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(WalletOutboxPublisher.class);
-    private static final int MAX_ATTEMPTS = 10;
 
     private final WalletOutboxMessageRepository outboxRepository;
     private final RabbitTemplate rabbitTemplate;
     private final TransactionTemplate txTemplate;
     private final int batchSize;
+    private final int maxAttempts;
     private final Duration batchPublishTimeout;
     private final Duration retryDelay;
     private final Duration processingTimeout;
@@ -48,6 +48,7 @@ public class WalletOutboxPublisher {
             RabbitTemplate rabbitTemplate,
             PlatformTransactionManager txManager,
             @Value("${wallet.outbox.batch-size:100}") int batchSize,
+            @Value("${wallet.outbox.max-attempts:10}") int maxAttempts,
             @Value("${wallet.outbox.batch-publish-timeout:5s}") Duration batchPublishTimeout,
             @Value("${wallet.outbox.retry-delay:1m}") Duration retryDelay,
             @Value("${wallet.outbox.processing-timeout:30m}") Duration processingTimeout) {
@@ -55,6 +56,9 @@ public class WalletOutboxPublisher {
                 || !connectionFactory.isPublisherReturns()) {
             // without returns, unroutable events would be acked and deleted as published
             throw new IllegalStateException("publisher returns must be enabled (spring.rabbitmq.publisher-returns)");
+        }
+        if (maxAttempts < 1) {
+            throw new IllegalArgumentException("max attempts must be at least 1: " + maxAttempts);
         }
         if (processingTimeout.toMinutes() < 1) {
             throw new IllegalArgumentException("processing timeout must be at least 1 minute: " + processingTimeout);
@@ -64,6 +68,7 @@ public class WalletOutboxPublisher {
         this.rabbitTemplate = rabbitTemplate;
         this.txTemplate = new TransactionTemplate(txManager);
         this.batchSize = batchSize;
+        this.maxAttempts = maxAttempts;
         this.batchPublishTimeout = batchPublishTimeout;
         this.retryDelay = retryDelay;
         this.processingTimeout = processingTimeout;
@@ -128,7 +133,7 @@ public class WalletOutboxPublisher {
         do {
             rows = txTemplate.execute(status -> {
                 var claimed = outboxRepository.claim(
-                        WalletOutboxMessage.Status.PENDING.name(), MAX_ATTEMPTS - 1, batchSize);
+                        WalletOutboxMessage.Status.PENDING.name(), maxAttempts, batchSize);
                 if (!claimed.isEmpty()) {
                     outboxRepository.markProcessing(
                             claimed.stream().map(WalletOutboxMessage::getId).toList(),
@@ -251,7 +256,7 @@ public class WalletOutboxPublisher {
         });
         for (var row : rows) {
             var error = result.failed().get(row.getTransactionId());
-            if (error != null && row.getAttempts() + 1 >= MAX_ATTEMPTS) {
+            if (error != null && row.getAttempts() + 1 >= maxAttempts) {
                 LOGGER.warn("done with outbox row {}, leaving it in wallet_outbox as-is: {}",
                         row.getTransactionId(), error);
             }

@@ -19,7 +19,7 @@ public interface WalletOutboxMessageRepository extends JpaRepository<WalletOutbo
     @Query(value = """
             select * from wallet_outbox
              where status = :status
-               and attempts <= :maxAttempts
+               and attempts < :maxAttempts
              order by seq asc
              limit :size
              for update skip locked
@@ -54,6 +54,8 @@ public interface WalletOutboxMessageRepository extends JpaRepository<WalletOutbo
                e.status = :status
              where e.transactionId = :id
             """)
-    int markFailed(@Param("id") UUID transactionId, @Param("lastError") String lastError,
-                   @Param("status") WalletOutboxMessage.Status status);
+    int markFailed(
+            @Param("id") UUID transactionId,
+            @Param("lastError") String lastError,
+            @Param("status") WalletOutboxMessage.Status status);
 }

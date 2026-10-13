@@ -130,7 +130,7 @@ class WalletOutboxMessageRepositoryTest {
     }
 
     private List<WalletOutboxMessage> claimPending() {
-        return outboxRepository.claim(WalletOutboxMessage.Status.PENDING.name(), MAX_ATTEMPTS - 1, ALL_ROWS);
+        return outboxRepository.claim(WalletOutboxMessage.Status.PENDING.name(), MAX_ATTEMPTS, ALL_ROWS);
     }
 
     private List<UUID> claimableAmong(List<UUID> mine) {

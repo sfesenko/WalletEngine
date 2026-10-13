@@ -31,6 +31,8 @@ class WalletOutboxPublisherConcurrencyTest {
 
     private static final int SEEDED_ROWS = 300;
     private static final int BATCH_SIZE = 10;
+    // fresh rows only: any limit >= 1 works here
+    private static final int MAX_ATTEMPTS = 10;
 
     @Autowired
     private WalletService walletService;
@@ -63,9 +65,9 @@ class WalletOutboxPublisherConcurrencyTest {
         }
 
         var first = new WalletOutboxPublisher(outboxRepository, rabbitTemplate, txManager,
-                BATCH_SIZE, Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofMinutes(10));
+                BATCH_SIZE, MAX_ATTEMPTS, Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofMinutes(10));
         var second = new WalletOutboxPublisher(outboxRepository, rabbitTemplate, txManager,
-                BATCH_SIZE, Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofMinutes(10));
+                BATCH_SIZE, MAX_ATTEMPTS, Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofMinutes(10));
 
         var start = new CountDownLatch(1);
         try (var pool = Executors.newFixedThreadPool(2)) {
