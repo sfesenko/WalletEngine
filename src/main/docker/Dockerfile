@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Smallest Liberica JRE image (BellSoft Alpaquita, musl based).
-# Build from the project root:
-#   mvn package
-#   docker build -f src/main/docker/Dockerfile -t walletengine:local .
+# Build via Maven (skipped by default):
+#   mvn package -Ddocker.skip=false
 FROM bellsoft/liberica-runtime-container:jre-21-slim-musl
 
 WORKDIR /app

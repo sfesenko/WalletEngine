@@ -3,7 +3,7 @@
 #   mvn spring-boot:run                 # app on host; Spring Boot starts these services automatically
 #   docker compose up -d                # ...or start the infrastructure manually
 #
-#   ./scripts/build-image.sh            # build the app image once (jar via Maven)
+#   mvn package -Ddocker.skip=false   # build the app image once (skipped by default)
 #   docker compose --profile app up -d  # full stack: infrastructure + app + one-shot seed container
 #
 #   docker compose stop                 # stop, keep containers and data
