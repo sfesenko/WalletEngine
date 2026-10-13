@@ -38,9 +38,6 @@ public class WalletFailedTransaction implements Persistable<UUID> {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
-    /**
-     * Makes {@code save} persist instead of merge — see {@link WalletTransaction}.
-     */
     @Transient
     private boolean isNew;
 

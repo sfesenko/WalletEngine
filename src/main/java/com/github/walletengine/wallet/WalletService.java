@@ -36,17 +36,18 @@ public class WalletService {
             WalletOutboxMessageRepository outboxRepository,
             WalletFailedTransactionRepository failedTransactionRepository,
             LockManager lockManager,
+            PlatformTransactionManager txManager,
             @Value("${wallet.lock.ttl:5s}") Duration lockTtl,
-            @Value("${wallet.idempotency.strict:true}") boolean strictIdempotency,
-            PlatformTransactionManager txManager) {
+            @Value("${wallet.idempotency.strict:true}") boolean strictIdempotency
+            ) {
         this.walletRepository = walletRepository;
         this.transactionRepository = transactionRepository;
         this.outboxRepository = outboxRepository;
         this.failedTransactionRepository = failedTransactionRepository;
         this.lockManager = lockManager;
+        this.txTemplate = new TransactionTemplate(txManager);
         this.lockTtl = lockTtl;
         this.strictIdempotency = strictIdempotency;
-        this.txTemplate = new TransactionTemplate(txManager);
     }
 
     public WalletMovement debit(UUID transactionId, UUID walletId, long amount) {

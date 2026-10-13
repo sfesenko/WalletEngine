@@ -20,6 +20,9 @@ import java.util.UUID;
 @Table(name = "wallets")
 public class Wallet implements Persistable<UUID> {
 
+    @Transient
+    private boolean isNew;
+
     @Id
     @Column(name = "wallet_id", nullable = false)
     private UUID walletId;
@@ -30,14 +33,6 @@ public class Wallet implements Persistable<UUID> {
     @CreationTimestamp
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
-
-    /**
-     * Makes {@code save} persist instead of merge: with an assigned id, Spring Data
-     * cannot tell a new entity from a detached one, and merge would silently reset the
-     * balance of an existing wallet.
-     */
-    @Transient
-    private boolean isNew;
 
     @PostLoad
     @PostPersist
