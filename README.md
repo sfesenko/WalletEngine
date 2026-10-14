@@ -112,3 +112,20 @@ Assuming the application is feature complete (no new requirements), possible enh
 - CI/CD: it missing currently, but is "must have" requirement for most projects:
   - use testcontainers for testing: will create fresh database for each test run, current docker-compose approach may breaks due to db schema changes
   - add more reporting tools, like SonarQube
+
+## Performance
+Here are numbers generated with  [docs/load-test.sh](docs/load-test.sh):
+
+| Scenario                               | Ops     | Throughput   | p50    | p99    |
+|----------------------------------------|---------|--------------|--------|--------|
+| mixed credit/debit - 50 wallets x 200  | 10,000  | 1,260 ops/s  | 38 ms  | 86 ms  |
+| credit - 100 wallets x 200             | 20,000  | 1,294 ops/s  | 72 ms  | 183 ms |
+| mixed - 200 wallets x 100              | 20,000  | 1,334 ops/s  | 145 ms | 335 ms |
+| read (GetBalance) - 50 wallets x 2000  | 100,000 | 8,795 ops/s  | 4.3 ms | 22 ms  |
+| read (GetBalance) - 100 wallets x 2000 | 200,000 | 10,888 ops/s | 8.2 ms | 26 ms  |
+
+Reproduce: 
+```shell
+# run application
+./docs/load-test.sh --wallets 50 --ops 200  # (also: `--mode credit|debit|read`, `--target host:port`).
+```

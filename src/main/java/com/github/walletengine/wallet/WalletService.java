@@ -88,7 +88,7 @@ public class WalletService {
      * Lock wallet an apply transaction, returns the stored ledger row
      */
     private WalletTransaction applyMovement(UUID transactionId, UUID walletId, long amount) {
-        try (var lock = lockManager.acquire("wallet:" + walletId, lockTtl)) {
+        try (var lock = lockManager.acquire(walletId.toString(), lockTtl)) {
             try {
                 var execution = txTemplate.execute(txStatus -> {
                     var result = executeMovement(transactionId, walletId, amount);
