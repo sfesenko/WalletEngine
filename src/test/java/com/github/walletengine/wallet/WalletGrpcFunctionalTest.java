@@ -128,7 +128,7 @@ class WalletGrpcFunctionalTest {
         stub.createWallet(createWalletRequest(walletId));
         stub.credit(transactionRequest(UUID.randomUUID(), walletId, 10_000L));
 
-        try (var ignored = lockManager.acquire("wallet:" + walletId, Duration.ofSeconds(10))) {
+        try (var ignored = lockManager.acquire(String.valueOf(walletId), Duration.ofSeconds(10))) {
             assertStatus(Status.Code.ABORTED, () -> stub.debit(transactionRequest(UUID.randomUUID(), walletId, AMOUNT)));
         }
     }
