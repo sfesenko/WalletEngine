@@ -40,7 +40,7 @@ public class WalletService {
             PlatformTransactionManager txManager,
             @Value("${wallet.lock.ttl:5s}") Duration lockTtl,
             @Value("${wallet.idempotency.strict:true}") boolean strictIdempotency
-            ) {
+    ) {
         this.walletRepository = walletRepository;
         this.transactionRepository = transactionRepository;
         this.outboxRepository = outboxRepository;
@@ -108,13 +108,9 @@ public class WalletService {
                     LOGGER.info("movement applied: tx={} wallet={} amount={}", transactionId, walletId, amount);
                 }
                 return execution.entry();
-            } catch (InsufficientFundsException e) {
-                LOGGER.warn("transaction rejected, insufficient funds: tx={} wallet={} amount={}",
-                        transactionId, walletId, amount);
-                throw e;
-            } catch (WalletNotFoundException e) {
-                LOGGER.warn("transaction rejected, wallet not found: tx={} wallet={} amount={}",
-                        transactionId, walletId, amount);
+            } catch (InsufficientFundsException | WalletNotFoundException e) {
+                LOGGER.warn("transaction rejected: tx={} wallet={} amount={} reason={}",
+                        transactionId, walletId, amount, e.getMessage());
                 throw e;
             }
         } catch (DataIntegrityViolationException e) {
@@ -158,11 +154,10 @@ public class WalletService {
             return rejected(transactionId, walletId, amount, WalletFailedTransaction.Error.WALLET_NOT_FOUND);
         }
         //  double-check transactionId - since we lock over walletId, that transactionId still may "slip" into DB
-        var stored = transactionRepository.findById(transactionId);
-        if (stored.isPresent()) {
-            return new MovementExecution(validateWalletLedger(stored.get(), walletId, amount), null, true);
-        }
-        return rejected(transactionId, walletId, amount, WalletFailedTransaction.Error.INSUFFICIENT_FUNDS);
+        return transactionRepository.findById(transactionId)
+                .map(wt -> validateWalletLedger(wt, walletId, amount))
+                .map(tx -> new MovementExecution(tx, null, true))
+                .orElseGet(() -> rejected(transactionId, walletId, amount, WalletFailedTransaction.Error.INSUFFICIENT_FUNDS));
     }
 
     /**

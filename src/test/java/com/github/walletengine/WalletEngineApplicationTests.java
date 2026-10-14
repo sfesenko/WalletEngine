@@ -26,6 +26,7 @@ class WalletEngineApplicationTests {
 
     @Test
     void contextLoads() {
+        // do nothing, but require spring context
     }
 
     @ParameterizedTest

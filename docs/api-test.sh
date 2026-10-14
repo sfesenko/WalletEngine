@@ -78,6 +78,14 @@ request() { # request <Method> <json> -> stdout, grpcurl errors included
   grpcurl -plaintext -d "$2" "$ADDR" "$SERVICE/$1" 2>&1
 }
 
+# JSON payload builders - the only request shapes this API accepts
+tx_req() { # tx_req <transaction_id> <wallet_id> <amount>
+  printf '{"transaction_id": "%s", "wallet_id": "%s", "amount": %s}' "$1" "$2" "$3"
+}
+wallet_req() { # wallet_req <wallet_id>
+  printf '{"wallet_id": "%s"}' "$1"
+}
+
 expect_ok() { # expect_ok <Method> <json> [grep -E pattern ...]
   local method="$1" payload="$2" out ok=1 pattern
   shift 2
@@ -136,7 +144,7 @@ for entry in \
   "00000000-0000-0000-0000-000000000002 5000" \
   "00000000-0000-0000-0000-000000000003 25000"; do
   read -r wallet expected <<<"$entry"
-  payload='{"wallet_id": "'"$wallet"'"}'
+  payload=$(wallet_req "$wallet")
   show GetBalance "$payload"
   out=$(request GetBalance "$payload")
   echo "$out" | sed 's/^/    /'
@@ -152,15 +160,15 @@ W=$(uuid)
 TX_CREDIT=$(uuid)
 TX_DEBIT=$(uuid)
 
-expect_ok CreateWallet '{"wallet_id": "'"$W"'"}' \
+expect_ok CreateWallet "$(wallet_req "$W")" \
   '"wallet_id": *"'"$W"'"' '"amount": *"0"'
-expect_ok GetBalance '{"wallet_id": "'"$W"'"}' \
+expect_ok GetBalance "$(wallet_req "$W")" \
   '"amount": *"0"'
-expect_ok Credit '{"transaction_id": "'"$TX_CREDIT"'", "wallet_id": "'"$W"'", "amount": 100}' \
+expect_ok Credit "$(tx_req "$TX_CREDIT" "$W" 100)" \
   '"amount": *"100"' '"transaction_amount": *"100"'
-expect_ok Debit '{"transaction_id": "'"$TX_DEBIT"'", "wallet_id": "'"$W"'", "amount": 100}' \
+expect_ok Debit "$(tx_req "$TX_DEBIT" "$W" 100)" \
   '"amount": *"0"' '"transaction_amount": *"-100"'
-expect_ok GetBalance '{"wallet_id": "'"$W"'"}' \
+expect_ok GetBalance "$(wallet_req "$W")" \
   '"amount": *"0"'
 
 section "Idempotency (same transaction_id)"
@@ -168,53 +176,74 @@ A=$(uuid)
 B=$(uuid)
 TX=$(uuid)
 
-expect_ok CreateWallet '{"wallet_id": "'"$A"'"}'
-expect_ok CreateWallet '{"wallet_id": "'"$B"'"}'
-expect_ok Credit '{"transaction_id": "'"$TX"'", "wallet_id": "'"$A"'", "amount": 100}' \
+expect_ok CreateWallet "$(wallet_req "$A")"
+expect_ok CreateWallet "$(wallet_req "$B")"
+expect_ok Credit "$(tx_req "$TX" "$A" 100)" \
   '"amount": *"100"'
-expect_ok Credit '{"transaction_id": "'"$TX"'", "wallet_id": "'"$A"'", "amount": 100}' \
+expect_ok Credit "$(tx_req "$TX" "$A" 100)" \
   '"amount": *"100"'
-expect_ok GetBalance '{"wallet_id": "'"$A"'"}' \
+expect_ok GetBalance "$(wallet_req "$A")" \
   '"amount": *"100"'
 # move the balance on, then replay the original transaction:
 # the original snapshot (100), not the live balance (150), must come back
-expect_ok Credit '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$A"'", "amount": 50}' \
+expect_ok Credit "$(tx_req "$(uuid)" "$A" 50)" \
   '"amount": *"150"'
-expect_ok Credit '{"transaction_id": "'"$TX"'", "wallet_id": "'"$A"'", "amount": 100}' \
+expect_ok Credit "$(tx_req "$TX" "$A" 100)" \
   '"amount": *"100"' '"transaction_amount": *"100"'
-expect_error Credit '{"transaction_id": "'"$TX"'", "wallet_id": "'"$B"'", "amount": 100}' InvalidArgument
-expect_error Credit '{"transaction_id": "'"$TX"'", "wallet_id": "'"$A"'", "amount": 999}' InvalidArgument
+expect_error Credit "$(tx_req "$TX" "$B" 100)" InvalidArgument
+expect_error Credit "$(tx_req "$TX" "$A" 999)" InvalidArgument
 
-section "Strict idempotency (stored failure is replayed)"
+# Strict idempotency: every replay returns the stored result - the original error
+# for a rejected tx, the balance snapshot for an applied tx - and moves no money.
+section "Strict idempotency (replayed results are stable)"
 C=$(uuid)
 FAILED_TX=$(uuid)
+OK_TX=$(uuid)
 
-expect_ok CreateWallet '{"wallet_id": "'"$C"'"}'
-expect_error Debit '{"transaction_id": "'"$FAILED_TX"'", "wallet_id": "'"$C"'", "amount": 999999}' FailedPrecondition
-expect_ok Credit '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$C"'", "amount": 999999}' \
-  '"amount": *"999999"'
-expect_error Debit '{"transaction_id": "'"$FAILED_TX"'", "wallet_id": "'"$C"'", "amount": 999999}' FailedPrecondition
+expect_ok CreateWallet "$(wallet_req "$C")"
+# debit on an empty wallet -> rejected; strict mode stores the rejection
+expect_error Debit "$(tx_req "$FAILED_TX" "$C" 900)" FailedPrecondition
+expect_ok Credit "$(tx_req "$(uuid)" "$C" 1000)" \
+  '"amount": *"1000"'
+# successful debit: the response snapshots the balance right after the movement
+expect_ok Debit "$(tx_req "$OK_TX" "$C" 300)" \
+  '"amount": *"700"' '"transaction_amount": *"-300"'
+# move the balance on, and above the rejected amount: re-execution would now succeed
+expect_ok Credit "$(tx_req "$(uuid)" "$C" 200)" \
+  '"amount": *"900"'
+expect_ok Credit "$(tx_req "$(uuid)" "$C" 200)" \
+  '"amount": *"1100"'
+# the stored rejection is replayed: balance is 1100 >= 900, but the tx must not execute
+expect_error Debit "$(tx_req "$FAILED_TX" "$C" 900)" FailedPrecondition
+# the applied tx replays its original snapshot (700), not the live balance (1100)
+expect_ok Debit "$(tx_req "$OK_TX" "$C" 300)" \
+  '"amount": *"700"' '"transaction_amount": *"-300"'
+# neither replay moved money
+expect_ok GetBalance "$(wallet_req "$C")" '"amount": *"1100"'
+# a rejected transaction_id may not be reused with another amount or wallet
+expect_error Debit "$(tx_req "$FAILED_TX" "$C" 901)" InvalidArgument
+expect_error Debit "$(tx_req "$FAILED_TX" "$B" 900)" InvalidArgument
 
 section "Error mapping"
-expect_error GetBalance '{"wallet_id": "'"$(uuid)"'"}' NotFound
-expect_error Credit '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$(uuid)"'", "amount": 100}' NotFound
-expect_error CreateWallet '{"wallet_id": "'"$A"'"}' AlreadyExists
-expect_error Credit '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$A"'", "amount": 0}' InvalidArgument
-expect_error Debit '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$A"'", "amount": -5}' InvalidArgument
-expect_error GetBalance '{"wallet_id": "not-a-uuid"}' InvalidArgument
+expect_error GetBalance "$(wallet_req "$(uuid)")" NotFound
+expect_error Credit "$(tx_req "$(uuid)" "$(uuid)" 100)" NotFound
+expect_error CreateWallet "$(wallet_req "$A")" AlreadyExists
+expect_error Credit "$(tx_req "$(uuid)" "$A" 0)" InvalidArgument
+expect_error Debit "$(tx_req "$(uuid)" "$A" -5)" InvalidArgument
+expect_error GetBalance "$(wallet_req "not-a-uuid")" InvalidArgument
 
 if [ "$STRESS" -eq 1 ]; then
   section "Stress: 50 concurrent debits of 1000 from a fresh wallet funded with 25000"
   S=$(uuid)
   TMP_DIR=$(mktemp -d)
-  expect_ok CreateWallet '{"wallet_id": "'"$S"'"}' \
+  expect_ok CreateWallet "$(wallet_req "$S")" \
     '"amount": *"0"'
-  expect_ok Credit '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$S"'", "amount": 25000}' \
+  expect_ok Credit "$(tx_req "$(uuid)" "$S" 25000)" \
     '"amount": *"25000"'
   echo "  firing 50 concurrent Debit calls..."
   for i in $(seq 1 50); do
     (
-      out=$(grpcurl -plaintext -d '{"transaction_id": "'"$(uuid)"'", "wallet_id": "'"$S"'", "amount": 1000}' "$ADDR" "$SERVICE/Debit" 2>&1)
+      out=$(grpcurl -plaintext -d "$(tx_req "$(uuid)" "$S" 1000)" "$ADDR" "$SERVICE/Debit" 2>&1)
       if grep -q 'Code: FailedPrecondition' <<<"$out"; then
         : > "$TMP_DIR/$i.rejected"
       elif grep -q '^ERROR' <<<"$out"; then
@@ -236,7 +265,7 @@ if [ "$STRESS" -eq 1 ]; then
     fail "$errors unexpected error(s):"
     for f in "$TMP_DIR"/*.error; do sed 's/^/    /' "$f"; done
   fi
-  expect_ok GetBalance '{"wallet_id": "'"$S"'"}' \
+  expect_ok GetBalance "$(wallet_req "$S")" \
     '"amount": *"0"'
 fi
 

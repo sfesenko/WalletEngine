@@ -62,7 +62,7 @@ public class LockManager {
     /**
      * Check that lock is still valid
      */
-    public void check(Lock lock) {
+    public void check(Lock lock) throws LockFailedException {
         var payload = redis.opsForValue().get(lock.key);
         if (!lock.payload.equals(payload)) {
             throw new LockFailedException("lock for " + lock.key + " is not held by us (expired or taken over)");
@@ -93,7 +93,7 @@ public class LockManager {
         /**
          * Check that lock is still valid
          */
-        public void check() {
+        public void check() throws LockFailedException {
             LockManager.this.check(this);
         }
 
