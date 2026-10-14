@@ -51,10 +51,10 @@ class WalletMovementTest {
 
         var movement = TestFixture.perform(walletService, operation, transactionId, walletId, amount);
 
-        assertThat(movement.entry().getTransactionId()).isEqualTo(transactionId);
-        assertThat(movement.entry().getWalletId()).isEqualTo(walletId);
-        assertThat(movement.entry().getAmount()).isEqualTo(expectedStored);
-        assertThat(movement.walletAmount()).isEqualTo(expectedBalance);
+        assertThat(movement.getTransactionId()).isEqualTo(transactionId);
+        assertThat(movement.getWalletId()).isEqualTo(walletId);
+        assertThat(movement.getAmount()).isEqualTo(expectedStored);
+        assertThat(movement.getWalletBalance()).isEqualTo(expectedBalance);
 
         var wallet = walletService.getWalletById(walletId);
 
@@ -68,9 +68,11 @@ class WalletMovementTest {
 
     @ParameterizedTest
     @CsvSource(value = {
-            "debit  | 100 | com.github.walletengine.wallet.InsufficientFundsException",
-            "debit  | 0   | org.springframework.dao.DataIntegrityViolationException",
-            "credit | 0   | org.springframework.dao.DataIntegrityViolationException",
+            "debit  | 100  | com.github.walletengine.wallet.InsufficientFundsException",
+            "debit  | 0    | java.lang.IllegalArgumentException",
+            "credit | 0    | java.lang.IllegalArgumentException",
+            "debit  | -100 | java.lang.IllegalArgumentException",
+            "credit | -100 | java.lang.IllegalArgumentException",
     }, delimiter = '|')
     void movementErrorIsRejected(String operation, long amount, Class<? extends Exception> expected) {
         var walletId = UUID.randomUUID();
@@ -125,27 +127,34 @@ class WalletMovementTest {
     }
 
     @Test
-    void duplicateTransactionReturnsStoredRowWithoutMovingBalanceTwice() {
+    void duplicateTransactionReplaysOriginalSnapshotAndDoesNotMoveBalanceTwice() {
         var walletId = UUID.randomUUID();
         var transactionId = UUID.randomUUID();
 
         walletService.createWallet(walletId);
 
         var first = walletService.credit(transactionId, walletId, 500L);
+
+        // the wallet balance moves on after the original movement
+        walletService.credit(UUID.randomUUID(), walletId, 100L);
+
         var second = walletService.credit(transactionId, walletId, 500L);
 
-        assertThat(second.entry().getTransactionId()).isEqualTo(first.entry().getTransactionId());
-        assertThat(second.entry().getAmount()).isEqualTo(first.entry().getAmount());
-        assertThat(first.walletAmount()).isEqualTo(500L);
-        assertThat(second.walletAmount()).isEqualTo(500L);
+        assertThat(second.getTransactionId()).isEqualTo(first.getTransactionId());
+        assertThat(second.getAmount()).isEqualTo(first.getAmount());
+        assertThat(first.getWalletBalance()).isEqualTo(500L);
+        // the replay reports the balance recorded with the original movement, not the live balance (600)
+        assertThat(second.getWalletBalance()).isEqualTo(500L);
 
         var wallet = walletService.getWalletById(walletId);
 
-        assertThat(wallet.getAmount()).isEqualTo(500L);
+        assertThat(wallet.getAmount()).isEqualTo(600L);
 
         var rows = ledgerRepository.findById(transactionId);
 
         assertThat(rows).isPresent();
+        // the stored row carries the balance snapshot taken when the movement was applied
+        assertThat(rows.get().getWalletBalance()).isEqualTo(500L);
 
         // the duplicate returned the stored row without queueing a second event
         assertThat(outboxRepository.findById(transactionId)).isPresent();

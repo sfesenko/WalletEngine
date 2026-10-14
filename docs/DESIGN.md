@@ -10,7 +10,10 @@ Needs to implement simple transaction processing engine, and maintain invariants
 - no requirements for `amount` / `currency` - free to choose better (simplest) option
 - duplicate `transaction_id` must return the original result, not re-execute the movement
 - immutable transaction log `wallet_ledger` may be enforced via DB constraints.
-- response idempotency: requirements has strict rule, that for any `transaction_id` that was already processed, same result must be returned, so failed `Debit` transaction cannot be reapplied later. That seems wrong, however investigation shows that this is common behaviour for payment processing. Anyway, app may implements both approaches and use configuration flag for them.
+- response idempotency: the task requires that for any `transaction_id` that was already processed the original result is returned, so failed `Debit` transaction cannot be reapplied later. 
+  - Burning an idempotency key by its first attempt is common for payment processing
+  - re-applying transient rejections is common for game wallets
+  - the app implements both approaches behind a configuration flag, strict is the default.
 
 While the requirements don't mention how wallets are created, consider possible options:
 
@@ -55,17 +58,18 @@ A separate API is what a real system would use, so that's the chosen approach.
 Each operation needs the wallet's current balance. While it is still possible to just sum(amount) over all of the
 wallet's transactions, that approach won't scale. So, to guarantee O(1) for balance calculation, the wallet balance
 must be maintained.
-There are 2 options where the wallet balance can be kept:
+Also to guarantee O(1) processing time, needs to store wallet's amount after each transaction, so in case of repeated request, the same wallet's amount may be provided. 
+
+There are 2 options where the current wallet balance can be kept:
 
 - Redis
     - PROS:
         - cheap access
     - CONS:
-        - still need to sum(amount) over all of the wallet's transactions for the 1st balance calculation
-        - hard to guarantee stable performance due to balance lazy-loading
+        - possible scalability issue: need to sum(amount) over all of the wallet's transactions for the 1st balance calculation, O(n)
 - DB (Postgres)
     - PROS:
-        - scalable approach
+        - scalable approach (all operations are O(1))
     - CONS:
         - probably slower than Redis
 - Hybrid: DB + Redis
@@ -119,7 +123,11 @@ Locking is used around `wallet_id`, to process transactions for a wallet sequent
 concurrent requests use the same `transaction_id`. (if the requests use different wallets - they bypass locking)
 
 The lock provides ordering and must outlive the transaction, otherwise sequential processing is not guaranteed, so the
-lock state is re-checked before commit.
+lock state is re-checked before commit. 
+
+Correctness does not depend on the Redis lock: 
+ - the conditional `UPDATE` (which can never drive the balance below zero) and the primary-key guards are enforced by the database 
+ - the Redis lock keeps same-wallet requests from piling up on DB row locks and preserves processing order.
 
 ### Idempotency
 
@@ -131,6 +139,8 @@ otherwise
     - rejected request is not recorded and may be re-applied later
     - so response for the same request will depends on wallet state
 In both cases, if request reuse transaction_id that was already recorded in system (all requests or successful requests) system will report error
+
+A replay returns the stored movement together with the wallet balance recorded after that movement was applied.
 
 ### Outbox implementation
 
@@ -146,9 +156,12 @@ Let's choose the "traditional" (RDBMS-centric) approach for outbox implementatio
         - this allows multiple attempts to process each event
         - rows are claimed only while `attempts < maxAttempts`; when the limit is reached, the event is left in the
           table as-is (with a warning) - no DLQ in this demo
-- crash-stuck `processing` events are reset to `pending` by a scheduled reclaimer once they are older than the
-  processing timeout
+- crash-stuck `processing` events are reset to `pending` by a scheduled reclaimer once they have been claimed for
+  longer than the processing timeout (`claimed_at`); rows claimed before the column existed fall back to `created_at`
 - to handle possible RabbitMQ downtime a simple circuit-breaker pauses publishing for a fixed delay after a
   whole-batch failure (`wallet.outbox.retry-delay`)
-    - this allows not "burning" the retry limit in case of service downtime
+    - this slows down burning of the retry limit: with the defaults (10 attempts, 1 minute pause) a broker outage
+      of roughly 10 minutes is survived
+    - longer outages park the remaining rows with a warning 
+    - no DQL implementation
 - delivery is at-least-once (rows are deleted only after an ack), so consumers must dedupe on `transaction_id`

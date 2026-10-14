@@ -6,7 +6,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.UUID;
@@ -114,13 +113,13 @@ class WalletIdempotencyStrictTest {
         walletService.createWallet(walletId);
 
         assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 0L))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(IllegalArgumentException.class);
 
         // input-validity rejections are state-independent: same error on retry, no record
         assertThat(failedTransactionRepository.findById(transactionId)).isEmpty();
 
         assertThatThrownBy(() -> walletService.debit(transactionId, walletId, 0L))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(IllegalArgumentException.class);
 
         assertThat(walletService.getWalletById(walletId).getAmount()).isZero();
     }

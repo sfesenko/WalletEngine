@@ -3,6 +3,7 @@ package com.github.walletengine;
 import com.github.walletengine.publisher.WalletAmqpConfiguration;
 import com.github.walletengine.publisher.WalletUpdatedEvent;
 import com.github.walletengine.wallet.WalletService;
+import com.github.walletengine.wallet.WalletTransaction;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.util.ArrayList;
@@ -42,7 +43,7 @@ public final class TestFixture {
         return transactionIds;
     }
 
-    public static WalletService.WalletMovement perform(
+    public static WalletTransaction perform(
             WalletService walletService,
             String operation,
             UUID transactionId, UUID walletId, long amount) {

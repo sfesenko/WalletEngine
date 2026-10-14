@@ -1,14 +1,6 @@
 package com.github.walletengine.publisher;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.Id;
-import jakarta.persistence.PostLoad;
-import jakarta.persistence.PostPersist;
-import jakarta.persistence.Table;
-import jakarta.persistence.Transient;
+import jakarta.persistence.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.springframework.data.domain.Persistable;
 
@@ -20,7 +12,8 @@ import java.util.UUID;
 public class WalletOutboxMessage implements Persistable<UUID> {
 
     public enum Status {
-        PENDING, PROCESSING
+        PENDING,
+        PROCESSING
     }
 
     @Id
@@ -49,6 +42,9 @@ public class WalletOutboxMessage implements Persistable<UUID> {
     @CreationTimestamp
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
+
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
 
     @Transient
     private boolean isNew;
@@ -111,5 +107,9 @@ public class WalletOutboxMessage implements Persistable<UUID> {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public Instant getClaimedAt() {
+        return claimedAt;
     }
 }

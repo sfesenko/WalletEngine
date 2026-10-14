@@ -39,8 +39,8 @@ class WalletEngineApplicationTests {
         var amount = 100L;
 
         jdbcTemplate.update("insert into wallets (wallet_id) values (?)", walletId);
-        jdbcTemplate.update("insert into wallet_ledger (transaction_id, wallet_id, amount) values (?, ?, ?)",
-                transactionId, walletId, amount);
+        jdbcTemplate.update("insert into wallet_ledger (transaction_id, wallet_id, amount, wallet_balance) values (?, ?, ?, ?)",
+                transactionId, walletId, amount, amount);
 
         assertThatThrownBy(() -> jdbcTemplate.update(sql, transactionId))
                 .isInstanceOf(DataAccessException.class)

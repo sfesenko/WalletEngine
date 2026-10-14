@@ -3,6 +3,7 @@ package com.github.walletengine.wallet;
 import com.github.walletengine.lock.LockManager;
 import com.github.walletengine.publisher.WalletOutboxMessage;
 import com.github.walletengine.publisher.WalletOutboxMessageRepository;
+import com.github.walletengine.util.Utils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -50,11 +51,13 @@ public class WalletService {
         this.strictIdempotency = strictIdempotency;
     }
 
-    public WalletMovement debit(UUID transactionId, UUID walletId, long amount) {
+    public WalletTransaction debit(UUID transactionId, UUID walletId, long amount) {
+        Utils.requirePositive(amount, () -> "debit amount must be positive: " + amount);
         return applyMovement(transactionId, walletId, -amount);
     }
 
-    public WalletMovement credit(UUID transactionId, UUID walletId, long amount) {
+    public WalletTransaction credit(UUID transactionId, UUID walletId, long amount) {
+        Utils.requirePositive(amount, () -> "credit amount must be positive: " + amount);
         return applyMovement(transactionId, walletId, amount);
     }
 
@@ -77,47 +80,41 @@ public class WalletService {
             // use saveAndFlush to force constraint validation inside transaction
             return walletRepository.saveAndFlush(wallet);
         } catch (DataIntegrityViolationException e) {
-            throw new WalletAlreadyExistsException(walletId);
+            throw new WalletAlreadyExistsException(walletId, e);
         }
     }
 
     /**
-     * Lock wallet an apply transaction
+     * Lock wallet an apply transaction, returns the stored ledger row
      */
-    private WalletMovement applyMovement(UUID transactionId, UUID walletId, long amount) {
+    private WalletTransaction applyMovement(UUID transactionId, UUID walletId, long amount) {
         try (var lock = lockManager.acquire("wallet:" + walletId, lockTtl)) {
             try {
-                var movement = txTemplate.execute(txStatus -> {
+                var execution = txTemplate.execute(txStatus -> {
                     var result = executeMovement(transactionId, walletId, amount);
-
-                    // load wallet's balance after update
-                    // may be either folded into WalletRepository.updateWallet as native `UPDATE ... RETURNING amount`
-                    // or use Redis as wallet's balance cache
-                    // or just remove balance from response
-                    var walletAmount = walletRepository.findById(walletId)
-                            .orElseThrow(() -> new WalletNotFoundException(walletId))
-                            .getAmount();
 
                     // if lock expired - abort transaction, because lock guarantees weren't enforced
                     lock.check();
-                    return new MovementResult(result.entry(), walletAmount, result.replayed());
+                    return result;
                 });
-                Objects.requireNonNull(movement, "this can't happen, txTemplate.execute won't return null");
-                if (movement.replayed()) {
-                    LOGGER.debug("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
+                Objects.requireNonNull(execution, "this can't happen, txTemplate.execute won't return null");
+                if (execution.rejection() != null) {
+                    // the rejection and its strict-mode record were committed with the movement transaction
+                    throw execution.rejection();
+                }
+                if (execution.replayed()) {
+                    LOGGER.info("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
                 } else {
                     LOGGER.info("movement applied: tx={} wallet={} amount={}", transactionId, walletId, amount);
                 }
-                return new WalletMovement(movement.entry(), movement.walletAmount());
+                return execution.entry();
             } catch (InsufficientFundsException e) {
                 LOGGER.warn("transaction rejected, insufficient funds: tx={} wallet={} amount={}",
                         transactionId, walletId, amount);
-                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.Error.INSUFFICIENT_FUNDS);
                 throw e;
             } catch (WalletNotFoundException e) {
                 LOGGER.warn("transaction rejected, wallet not found: tx={} wallet={} amount={}",
                         transactionId, walletId, amount);
-                recordFailedTransaction(transactionId, walletId, amount, WalletFailedTransaction.Error.WALLET_NOT_FOUND);
                 throw e;
             }
         } catch (DataIntegrityViolationException e) {
@@ -136,7 +133,7 @@ public class WalletService {
     private MovementExecution executeMovement(UUID transactionId, UUID walletId, long amount) {
         var existing = transactionRepository.findById(transactionId);
         if (existing.isPresent()) {
-            return new MovementExecution(validateWalletLedger(existing.get(), walletId, amount), true);
+            return new MovementExecution(validateWalletLedger(existing.get(), walletId, amount), null, true);
         }
         if (strictIdempotency) {
             var failed = failedTransactionRepository.findById(transactionId);
@@ -147,25 +144,32 @@ public class WalletService {
 
         var updated = walletRepository.updateWallet(walletId, amount);
         if (updated > 0) {
+            // snapshot the wallet balance after this movement, so a replay is reproducible from the ledger row
+            var walletBalance = walletRepository.findById(walletId)
+                    .orElseThrow(() -> new WalletNotFoundException(walletId))
+                    .getAmount();
             outboxRepository.save(new WalletOutboxMessage(transactionId, walletId, amount));
-            return new MovementExecution(transactionRepository.save(new WalletTransaction(transactionId, walletId, amount)), false);
+            return new MovementExecution(
+                    transactionRepository.save(new WalletTransaction(transactionId, walletId, amount, walletBalance)), null, false);
         }
         // wallet update may fail because either wallet is missing or amount became negative
         // check actual reason
         if (!walletRepository.existsById(walletId)) {
-            throw new WalletNotFoundException(walletId);
+            return rejected(transactionId, walletId, amount, WalletFailedTransaction.Error.WALLET_NOT_FOUND);
         }
         //  double-check transactionId - since we lock over walletId, that transactionId still may "slip" into DB
-        return transactionRepository.findById(transactionId)
-                .map(stored -> new MovementExecution(validateWalletLedger(stored, walletId, amount), true))
-                .orElseThrow(() -> new InsufficientFundsException(walletId));
+        var stored = transactionRepository.findById(transactionId);
+        if (stored.isPresent()) {
+            return new MovementExecution(validateWalletLedger(stored.get(), walletId, amount), null, true);
+        }
+        return rejected(transactionId, walletId, amount, WalletFailedTransaction.Error.INSUFFICIENT_FUNDS);
     }
 
     /**
      * Ensure specified transaction was already applied to the same wallet
      * throw IllegalTransactionException otherwise
      */
-    private WalletMovement resolveCommittedDuplicate(
+    private WalletTransaction resolveCommittedDuplicate(
             UUID transactionId,
             UUID walletId,
             long amount,
@@ -175,11 +179,8 @@ public class WalletService {
             throw original;
         }
         var entry = validateWalletLedger(stored, walletId, amount);
-        var walletAmount = walletRepository.findById(walletId)
-                .orElseThrow(() -> new WalletNotFoundException(walletId))
-                .getAmount();
-        LOGGER.debug("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
-        return new WalletMovement(entry, walletAmount);
+        LOGGER.info("movement replayed: tx={} wallet={} amount={}", transactionId, walletId, amount);
+        return entry;
     }
 
     /**
@@ -204,46 +205,34 @@ public class WalletService {
                     stored.getTransactionId(), stored.getWalletId(), stored.getAmount(), walletId, amount);
             throw IllegalTransactionException.transactionAlreadyUsed(stored.getTransactionId());
         }
-        return switch (stored.getError()) {
+        return toException(stored.getError(), walletId);
+    }
+
+    /**
+     * State-dependent rejection. In strict mode the rejection is recorded within the movement's
+     * transaction (the caller throws the exception only after that transaction committed), so a
+     * duplicate request always finds the stored rejection.
+     */
+    private MovementExecution rejected(
+            UUID transactionId, UUID walletId, long amount, WalletFailedTransaction.Error error) {
+        if (strictIdempotency) {
+            // on conflict do nothing: a racing duplicate may have recorded this rejection first
+            failedTransactionRepository.insertIfAbsent(transactionId, walletId, amount, error.name());
+        }
+        return new MovementExecution(null, toException(error, walletId), false);
+    }
+
+    private static RuntimeException toException(WalletFailedTransaction.Error error, UUID walletId) {
+        return switch (error) {
             case INSUFFICIENT_FUNDS -> new InsufficientFundsException(walletId);
             case WALLET_NOT_FOUND -> new WalletNotFoundException(walletId);
         };
     }
 
     /**
-     * Strict idempotency:: Records a state-dependent failure.
+     * Movement outcome: a stored entry (newly applied or replayed for a duplicate request), or a
+     * state-dependent rejection that is thrown once its transaction committed.
      */
-    private void recordFailedTransaction(UUID transactionId, UUID walletId, long amount, WalletFailedTransaction.Error error) {
-        if (!strictIdempotency) {
-            return;
-        }
-        if (failedTransactionRepository.existsById(transactionId)) {
-            // the failure is already recorded; duplicate requests replay the stored rejection
-            return;
-        }
-        try {
-            txTemplate.execute(txStatus ->
-                    failedTransactionRepository.save(new WalletFailedTransaction(transactionId, walletId, amount, error)));
-        } catch (DataIntegrityViolationException ignored) {
-            // a racing duplicate recorded this failure first — the stored record replays instead
-        }
-    }
-
-    /**
-     * Movement outcome: stored entry plus whether it was newly applied or replayed for a duplicate request.
-     */
-    private record MovementExecution(WalletTransaction entry, boolean replayed) {
-    }
-
-    /**
-     * Movement execution plus the wallet amount read after it, inside the movement transaction.
-     */
-    private record MovementResult(WalletTransaction entry, long walletAmount, boolean replayed) {
-    }
-
-    /**
-     * Movement result reported to callers: the stored transaction and the wallet balance after it.
-     */
-    public record WalletMovement(WalletTransaction entry, long walletAmount) {
+    private record MovementExecution(WalletTransaction entry, RuntimeException rejection, boolean replayed) {
     }
 }

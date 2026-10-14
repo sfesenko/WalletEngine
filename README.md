@@ -19,8 +19,16 @@ Profile `fast-test` skips `slow`-tagged tests (`mvn test -Pfast-test`).
 - `mvn test -Pfast-test` — fast loop; skips the `slow`-tagged stress tests.
 - `mvn verify` — full build: Checkstyle, tests, SpotBugs.
 
+The suite shares one Postgres/RabbitMQ stack between runs and tolerates leftover test
+data. 
+For clean-up fresh start may be required:
+```shell
+docker compose down -v
+```
+
 ### Manual testing
 `grpcurl` CLI tool may be used to access gRPC api.
+See [docs/api-test.sh](docs/api-test.sh)
 
 Available endpoints:
 - gRPC API is `wallet.v1.WalletService` on `:9090` (proto: `src/main/proto/wallet/v1/wallet.proto`),
@@ -41,7 +49,6 @@ Seeded wallets (`V3__seed_test_data.sql`):
 #### Request samples
 ```shell
 grpcurl -plaintext -d '{"wallet_id": "00000000-0000-0000-0000-000000000001"}' localhost:9090 wallet.v1.WalletService/GetBalance
-grpcurl -plaintext -d '{"transaction_id": "aaaaaaaa-0000-0000-0000-000000000001", "wallet_id": "00000000-0000-0000-0000-000000000001", "amount": 100}' localhost:9090 wallet.v1.WalletService/Credit
 
 grpcurl -plaintext -d '{"wallet_id": "10000000-0000-0000-0000-000000000000"}' localhost:9090 wallet.v1.WalletService/CreateWallet
 grpcurl -plaintext -d '{"transaction_id": "aaaaaaaa-0000-0000-0000-000000000002", "wallet_id": "10000000-0000-0000-0000-000000000000", "amount": 100}' localhost:9090 wallet.v1.WalletService/Credit
@@ -49,7 +56,9 @@ grpcurl -plaintext -d '{"transaction_id": "aaaaaaaa-0000-0000-0000-000000000003"
 ```
 
 ### RabbitMQ UI
-Available at http://localhost:15672` (`myuser`/`secret`), exchange `wallet.events`, queue `wallet.updated` - see `WalletAmqpConfiguration.java
+Available at `http://localhost:15672` (`myuser`/`secret`)
+exchange `wallet.events`, queue `wallet.updated` - see `WalletAmqpConfiguration.java`
+See [docs/rabbitmq.sh](docs/rabbitmq.sh)
 
 ## Run with docker compose (Bonus 1)
 To run application as service with docker compose, needs to build docker image first:

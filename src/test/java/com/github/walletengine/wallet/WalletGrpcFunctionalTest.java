@@ -189,7 +189,7 @@ class WalletGrpcFunctionalTest {
     }
 
     @Test
-    void replayedTransactionReportsOriginalMovementAndCurrentBalance() {
+    void replayedTransactionReportsOriginalSnapshot() {
         var walletId = UUID.randomUUID();
         var replayedTransactionId = UUID.randomUUID();
 
@@ -200,7 +200,8 @@ class WalletGrpcFunctionalTest {
         var replayed = stub.credit(transactionRequest(replayedTransactionId, walletId, AMOUNT));
 
         assertThat(replayed.getTransactionAmount()).isEqualTo(AMOUNT);
-        assertThat(replayed.getAmount()).isEqualTo(AMOUNT + 50L);
+        // the balance recorded with the original movement, not the live balance (AMOUNT + 50)
+        assertThat(replayed.getAmount()).isEqualTo(AMOUNT);
     }
 
     @Test

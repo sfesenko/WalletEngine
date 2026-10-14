@@ -96,8 +96,9 @@ class WalletOutboxMessageRepositoryTest {
         var updated = outboxRepository.markProcessing(List.of(first, second), WalletOutboxMessage.Status.PROCESSING);
 
         assertThat(updated).isEqualTo(2);
-        assertThat(outboxRepository.findById(first).orElseThrow().getStatus())
-                .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
+        var firstRow = outboxRepository.findById(first).orElseThrow();
+        assertThat(firstRow.getStatus()).isEqualTo(WalletOutboxMessage.Status.PROCESSING);
+        assertThat(firstRow.getClaimedAt()).isNotNull();
         assertThat(outboxRepository.findById(second).orElseThrow().getStatus())
                 .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
         assertThat(claimableAmong(List.of(first, second))).isEmpty();
@@ -110,12 +111,12 @@ class WalletOutboxMessageRepositoryTest {
 
         jdbcTemplate.update("""
                 update wallet_outbox
-                   set status = 'PROCESSING', created_at = now() - interval '2 hours'
+                   set status = 'PROCESSING', claimed_at = now() - interval '2 hours'
                  where transaction_id = ?
                 """, staleId);
         jdbcTemplate.update("""
                 update wallet_outbox
-                   set status = 'PROCESSING'
+                   set status = 'PROCESSING', claimed_at = now()
                  where transaction_id = ?
                 """, freshId);
 
@@ -127,6 +128,24 @@ class WalletOutboxMessageRepositoryTest {
                 .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
 
         outboxRepository.deleteByTransactionIds(List.of(staleId, freshId));
+    }
+
+    @Test
+    void recentlyClaimedRowIsNotReclaimedEvenIfCreatedLongAgo() {
+        var oldId = TestFixture.creditFreshWallet(walletService, 100L);
+
+        jdbcTemplate.update("""
+                update wallet_outbox
+                   set status = 'PROCESSING', created_at = now() - interval '2 hours', claimed_at = now()
+                 where transaction_id = ?
+                """, oldId);
+
+        outboxRepository.resetStaleProcessing(PROCESSING_TIMEOUT_MINUTES);
+
+        assertThat(outboxRepository.findById(oldId).orElseThrow().getStatus())
+                .isEqualTo(WalletOutboxMessage.Status.PROCESSING);
+
+        outboxRepository.deleteByTransactionIds(List.of(oldId));
     }
 
     private List<WalletOutboxMessage> claimPending() {

@@ -359,7 +359,7 @@ abstract class AbstractWalletConcurrencyTest {
 
             var start = new CyclicBarrier(2);
             try (var executor = Executors.newFixedThreadPool(2)) {
-                var tasks = new ArrayList<Callable<WalletService.WalletMovement>>(2);
+                var tasks = new ArrayList<Callable<WalletTransaction>>(2);
                 for (var t = 0; t < 2; t++) {
                     tasks.add(() -> {
                         start.await();
@@ -371,10 +371,10 @@ abstract class AbstractWalletConcurrencyTest {
                 var first = futures.getFirst().get(10, TimeUnit.SECONDS);
                 var second = futures.getLast().get(10, TimeUnit.SECONDS);
 
-                assertThat(first.entry().getTransactionId()).isEqualTo(transactionId);
+                assertThat(first.getTransactionId()).isEqualTo(transactionId);
                 assertThat(second).usingRecursiveComparison()
                         // updated_at: Hibernate sets it in-memory, Postgres stores microseconds
-                        .ignoringFields("entry.updatedAt")
+                        .ignoringFields("updatedAt")
                         .isEqualTo(first);
                 assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(500L);
             }
@@ -391,7 +391,7 @@ abstract class AbstractWalletConcurrencyTest {
         walletService.createWallet(secondWalletId);
 
         var start = new CyclicBarrier(2);
-        var tasks = new ArrayList<Callable<WalletService.WalletMovement>>(2);
+        var tasks = new ArrayList<Callable<WalletTransaction>>(2);
         tasks.add(() -> {
             start.await();
             return walletService.credit(transactionId, firstWalletId, 500L);
@@ -445,8 +445,8 @@ abstract class AbstractWalletConcurrencyTest {
 
         assertThat(outcome.failure()).isNull();
         assertThat(outcome.value()).isNotNull();
-        assertThat(outcome.value().entry().getTransactionId()).isEqualTo(transactionId);
-        assertThat(outcome.value().entry().getAmount()).isEqualTo(expectedStored);
+        assertThat(outcome.value().getTransactionId()).isEqualTo(transactionId);
+        assertThat(outcome.value().getAmount()).isEqualTo(expectedStored);
         assertThat(walletService.getWalletById(walletId).getAmount()).isEqualTo(expectedBalance);
     }
 
@@ -493,7 +493,7 @@ abstract class AbstractWalletConcurrencyTest {
         return ledgerByWallet.values().stream().anyMatch(byTx -> byTx.containsKey(transactionId));
     }
 
-    private record RaceOutcome(WalletService.WalletMovement value, RuntimeException failure) {
+    private record RaceOutcome(WalletTransaction value, RuntimeException failure) {
     }
 
     private record RejectedRow(UUID walletId, long amount, String errorCode) {
@@ -501,7 +501,7 @@ abstract class AbstractWalletConcurrencyTest {
 
     /** Winner commits only after the service call is blocked on the wallet row. */
     private RaceOutcome raceBehindUncommittedWinner(UUID transactionId, UUID walletId, long winnerAmount,
-            Callable<WalletService.WalletMovement> serviceCall) throws Exception {
+            Callable<WalletTransaction> serviceCall) throws Exception {
         var sideReady = new CountDownLatch(1);
         var releaseSide = new CountDownLatch(1);
         var sideFailure = new AtomicReference<Throwable>();
@@ -511,8 +511,12 @@ abstract class AbstractWalletConcurrencyTest {
                 new TransactionTemplate(txManager).executeWithoutResult(status -> {
                     jdbcTemplate.update("update wallets set amount = amount + ? where wallet_id = ?",
                             winnerAmount, walletId);
-                    jdbcTemplate.update("insert into wallet_ledger (transaction_id, wallet_id, amount) values (?, ?, ?)",
-                            transactionId, walletId, winnerAmount);
+                    var walletBalance = jdbcTemplate.queryForObject(
+                            "select amount from wallets where wallet_id = ?", Long.class, walletId);
+                    jdbcTemplate.update(
+                            "insert into wallet_ledger (transaction_id, wallet_id, amount, wallet_balance)"
+                                    + " values (?, ?, ?, ?)",
+                            transactionId, walletId, winnerAmount, walletBalance);
                     jdbcTemplate.update("insert into wallet_outbox (transaction_id, wallet_id, amount) values (?, ?, ?)",
                             transactionId, walletId, winnerAmount);
                     sideReady.countDown();
@@ -530,7 +534,7 @@ abstract class AbstractWalletConcurrencyTest {
             awaitLatch(sideReady, 10_000);
 
             var serviceFailure = new AtomicReference<Throwable>();
-            var serviceValue = new AtomicReference<WalletService.WalletMovement>();
+            var serviceValue = new AtomicReference<WalletTransaction>();
             var service = new Thread(() -> {
                 try {
                     serviceValue.set(serviceCall.call());

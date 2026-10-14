@@ -1,12 +1,12 @@
 package com.github.walletengine.wallet;
 
 import com.github.walletengine.grpc.wallet.v1.*;
+import com.github.walletengine.util.Utils;
 import com.google.protobuf.Timestamp;
 import io.grpc.stub.StreamObserver;
 import org.springframework.grpc.server.service.GrpcService;
 
 import java.time.Instant;
-import java.util.UUID;
 
 /**
  * Wallet gRPC endpoint.
@@ -23,12 +23,13 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
 
     @Override
     public void debit(TransactionRequest request, StreamObserver<TransactionResponse> observer) {
-        var transactionId = parseUuid(request.getTransactionId(), "transaction_id");
-        var walletId = parseUuid(request.getWalletId(), "wallet_id");
-        var amount = requirePositiveAmount(request.getAmount(), "debit");
+        var transactionId = Utils.parseUuid(request.getTransactionId(), "transaction_id");
+        var walletId = Utils.parseUuid(request.getWalletId(), "wallet_id");
+        var amount = Utils.requirePositive(request.getAmount(),
+                () -> "debit amount must be positive: " + request.getAmount());
 
-        var movement = walletService.debit(transactionId, walletId, amount);
-        var response = toTransactionResponse(movement);
+        var transaction = walletService.debit(transactionId, walletId, amount);
+        var response = toTransactionResponse(transaction);
 
         observer.onNext(response);
         observer.onCompleted();
@@ -36,12 +37,13 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
 
     @Override
     public void credit(TransactionRequest request, StreamObserver<TransactionResponse> observer) {
-        var transactionId = parseUuid(request.getTransactionId(), "transaction_id");
-        var walletId = parseUuid(request.getWalletId(), "wallet_id");
-        var amount = requirePositiveAmount(request.getAmount(), "credit");
+        var transactionId = Utils.parseUuid(request.getTransactionId(), "transaction_id");
+        var walletId = Utils.parseUuid(request.getWalletId(), "wallet_id");
+        var amount = Utils.requirePositive(request.getAmount(),
+                () -> "credit amount must be positive: " + request.getAmount());
 
-        var movement = walletService.credit(transactionId, walletId, amount);
-        var response = toTransactionResponse(movement);
+        var transaction = walletService.credit(transactionId, walletId, amount);
+        var response = toTransactionResponse(transaction);
 
         observer.onNext(response);
         observer.onCompleted();
@@ -49,7 +51,7 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
 
     @Override
     public void getBalance(GetBalanceRequest request, StreamObserver<WalletResponse> observer) {
-        var walletId = parseUuid(request.getWalletId(), "wallet_id");
+        var walletId = Utils.parseUuid(request.getWalletId(), "wallet_id");
 
         var wallet = walletService.getWalletById(walletId);
         var response = toWalletResponse(wallet);
@@ -60,7 +62,7 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
 
     @Override
     public void createWallet(CreateWalletRequest request, StreamObserver<WalletResponse> observer) {
-        var walletId = parseUuid(request.getWalletId(), "wallet_id");
+        var walletId = Utils.parseUuid(request.getWalletId(), "wallet_id");
 
         var wallet = walletService.createWallet(walletId);
         var response = toWalletResponse(wallet);
@@ -69,33 +71,13 @@ public class WalletGrpcService extends WalletServiceGrpc.WalletServiceImplBase {
         observer.onCompleted();
     }
 
-    private static UUID parseUuid(String value, String field) {
-        try {
-            return UUID.fromString(value);
-        } catch (IllegalArgumentException e) {
-            var message = field + " is not a valid UUID: " + value;
-
-            throw new IllegalArgumentException(message, e);
-        }
-    }
-
-    private static long requirePositiveAmount(long amount, String operation) {
-        if (amount <= 0) {
-            var message = operation + " amount must be positive: " + amount;
-
-            throw new IllegalArgumentException(message);
-        }
-
-        return amount;
-    }
-
-    private static TransactionResponse toTransactionResponse(WalletService.WalletMovement movement) {
+    private static TransactionResponse toTransactionResponse(WalletTransaction transaction) {
         return TransactionResponse.newBuilder()
-                .setTransactionId(movement.entry().getTransactionId().toString())
-                .setWalletId(movement.entry().getWalletId().toString())
-                .setAmount(movement.walletAmount())
-                .setTransactionAmount(movement.entry().getAmount())
-                .setUpdatedAt(toTimestamp(movement.entry().getUpdatedAt()))
+                .setTransactionId(transaction.getTransactionId().toString())
+                .setWalletId(transaction.getWalletId().toString())
+                .setAmount(transaction.getWalletBalance())
+                .setTransactionAmount(transaction.getAmount())
+                .setUpdatedAt(toTimestamp(transaction.getUpdatedAt()))
                 .build();
     }
 

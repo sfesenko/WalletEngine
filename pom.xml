@@ -110,6 +110,11 @@
                             <build>
                                 <contextDir>${project.basedir}</contextDir>
                                 <dockerFile>src/main/docker/Dockerfile</dockerFile>
+                                <!-- the Dockerfile consumes ${JAR_FILE} as a Docker build arg; keep Maven filtering off -->
+                                <filter>false</filter>
+                                <args>
+                                    <JAR_FILE>target/${project.build.finalName}.jar</JAR_FILE>
+                                </args>
                             </build>
                         </image>
                     </images>

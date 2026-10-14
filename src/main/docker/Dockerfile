@@ -9,7 +9,10 @@ WORKDIR /app
 RUN adduser -D -u 1001 spring
 USER spring
 
-# The application jar is built locally (`mvn package`) and copied from target/.
-COPY target/*.jar app.jar
+# The application jar is built locally (`mvn package`); the Maven docker plugin
+# passes its exact path as a build arg (`target/<finalName>.jar`). The wildcard
+# default keeps a plain `docker build` usable as a fallback.
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
 
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

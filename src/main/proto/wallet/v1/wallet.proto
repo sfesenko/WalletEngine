@@ -27,7 +27,7 @@ message TransactionRequest {
 message TransactionResponse {
   string transaction_id = 1; // UUID
   string wallet_id = 2;      // UUID
-  optional int64 amount = 3; // wallet balance at response time; optional so a zero balance is explicit
+  optional int64 amount = 3; // wallet balance after the movement; a duplicate request returns the original snapshot
   google.protobuf.Timestamp updated_at = 4; // when the movement was recorded
   int64 transaction_amount = 5; //  positive = deposit, negative = withdrawal
 }

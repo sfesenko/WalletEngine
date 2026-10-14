@@ -5,7 +5,7 @@ import java.util.UUID;
 /** Maps to {@code ALREADY_EXISTS}. */
 public class WalletAlreadyExistsException extends RuntimeException {
 
-    public WalletAlreadyExistsException(UUID walletId) {
-        super("wallet already exists: " + walletId);
+    public WalletAlreadyExistsException(UUID walletId, Throwable cause) {
+        super("wallet already exists: " + walletId, cause);
     }
 }

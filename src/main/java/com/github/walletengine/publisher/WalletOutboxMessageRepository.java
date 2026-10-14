@@ -30,15 +30,22 @@ public interface WalletOutboxMessageRepository extends JpaRepository<WalletOutbo
             @Param("size") int size);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("update WalletOutboxMessage e set e.status = :status where e.transactionId in :ids")
+    @Query("""
+            update WalletOutboxMessage e
+               set e.status = :status,
+                   e.claimedAt = CURRENT_TIMESTAMP
+             where e.transactionId in :ids
+            """)
     int markProcessing(@Param("ids") Collection<UUID> ids, @Param("status") WalletOutboxMessage.Status status);
 
+    // Keyed on the claim timestamp: a row is stale only after it has been claimed for the
+    // timeout. Rows claimed before the column existed fall back to their insertion time.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             update wallet_outbox
                set status = 'PENDING'
              where status = 'PROCESSING'
-               and (now() - created_at) > (:timeoutMinutes * interval '1 minute')
+               and (now() - coalesce(claimed_at, created_at)) > (:timeoutMinutes * interval '1 minute')
             """, nativeQuery = true)
     int resetStaleProcessing(@Param("timeoutMinutes") long timeoutMinutes);
 

@@ -6,7 +6,8 @@ create table wallet_outbox (
     status         varchar     not null default 'PENDING',
     attempts       integer     not null default 0,
     last_error     text,
-    created_at     timestamptz not null default now()
+    created_at     timestamptz not null default now(),
+    claimed_at     timestamptz
 );
 
 create unique index idx_wallet_outbox_seq on wallet_outbox (seq);

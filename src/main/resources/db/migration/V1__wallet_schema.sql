@@ -8,6 +8,7 @@ create table wallet_ledger (
     transaction_id uuid primary key,
     wallet_id      uuid        not null references wallets (wallet_id),
     amount         bigint      not null,
+    wallet_balance bigint      not null,
     updated_at     timestamptz not null default now()
 );
 
@@ -33,6 +34,10 @@ alter table wallets
 
 alter table wallet_ledger
     add constraint wallet_ledger_amount_nonzero check (amount <> 0);
+
+-- balance after the movement, snapshotting the original result for idempotent replays
+alter table wallet_ledger
+    add constraint wallet_ledger_wallet_balance_nonnegative check (wallet_balance >= 0);
 
 -- failed transactions, for strict idempotency mode
 create table wallet_failed_transactions (

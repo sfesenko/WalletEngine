@@ -34,6 +34,10 @@ public class WalletTransaction implements Persistable<UUID> {
     @Column(name = "amount", nullable = false)
     private long amount;
 
+    /** wallet balance after this movement was applied; makes replays reproducible from the row alone */
+    @Column(name = "wallet_balance", nullable = false)
+    private long walletBalance;
+
     @CreationTimestamp
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
@@ -50,10 +54,11 @@ public class WalletTransaction implements Persistable<UUID> {
         // for JPA
     }
 
-    public WalletTransaction(UUID transactionId, UUID walletId, long amount) {
+    public WalletTransaction(UUID transactionId, UUID walletId, long amount, long walletBalance) {
         this.transactionId = transactionId;
         this.walletId = walletId;
         this.amount = amount;
+        this.walletBalance = walletBalance;
         this.isNew = true;
     }
 
@@ -83,6 +88,10 @@ public class WalletTransaction implements Persistable<UUID> {
 
     public long getAmount() {
         return amount;
+    }
+
+    public long getWalletBalance() {
+        return walletBalance;
     }
 
     public Instant getUpdatedAt() {
