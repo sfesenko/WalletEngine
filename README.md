@@ -2,7 +2,6 @@
 High-throughput Player Wallet Service prototype
 
 ## Docs
-- [Task](docs/TASK.md) — the requirements this repo implements
 - [Design](docs/DESIGN.md) — design notes
 - [AWS](docs/AWS.md) — how to host on AWS (Bonus 2)
 
